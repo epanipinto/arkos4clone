@@ -8,12 +8,10 @@ and a shell. The link uses the OTG USB cable, or Wi-Fi with a dongle.
   normal restart puts every setting back.
 - **The R36S never powers the cable.** It switches its OTG 5 V off before it
   asks for the PC, and keeps it off until you turn it back on or restart.
-- **Status: experimental.** Tested on an R36S clone ("clone type2 panel1 amp",
-  dArkOS4Clone 20261008) on 11/3 and 11/4; see
-  [Device test results](#device-test-results). Still to test on the device:
-  unplugging the cable while the link runs (step 5 of the
-  [first device test](#first-device-test)), and stopping the link and **OTG
-  power on** afterwards (step 10).
+- **Status: experimental.** Tested on one R36S clone ("clone type2 panel1
+  amp", dArkOS4Clone 20261008) on 11/3 and 11/4, including unplugging the
+  cable while the link runs and **OTG power on** after the link stops; see
+  [Device test results](#device-test-results).
 - **Device:** RK3326 boards laid out like the R36S clone: `pclinkd.sh check`
   reads the board file at runtime and refuses anything else (the OTG port must
   be `otg`, its 5 V `vbus_host` on GPIO3_A4, the PHY's OTG port disabled).
@@ -280,13 +278,32 @@ On an R36S clone ("clone type2 panel1 amp", dArkOS4Clone 20261008, kernel
   arrived. **Show the log** now labels them harmless.
 - **Installed:** the device files here (`PC Link.sh`, `pclinkd.sh`,
   `pclink_agent.py`) are the ones on the R36S, checked by SHA-256.
-- **Not yet tested:**
-  - step 5 of the [first device test](#first-device-test): unplugging the cable
-    while the link runs. This kernel's dwc2 never reports an unplug, so PC Link
-    watches the PC's 5 V bit instead; whether that bit drops when the cable
-    comes out hasn't been checked yet;
-  - step 10: stopping the link with the cable in, and **OTG power on**
-    afterwards (the 5 V interlock).
+- **11/4, step 7 again,** on a fresh start of the link: in the PC Link menu,
+  `press a --trace` gave one Enter down and up at 50 ms, and `press down` three
+  times moved three items. The menu reopened on the last item used, **Start**
+  while the link was on said so and asked nothing, and **Back to the games**
+  kept the link up.
+- **11/4, step 5 (unplug):** with the link up, the cable came out for about 14
+  seconds. PC Link's log, trimmed:
+
+  ```text
+  08:56:19 USB: the PC's 5 V went away (cable unplugged?); usb0 packets in 3813, …
+  08:56:19 USB: usb0 lost its carrier (carrier changes 2 -> 3); …
+  08:56:33 USB: the PC's 5 V came in; kernel: dwc2 ff300000.usb: new device is high-speed …
+  08:56:35 USB: the PC re-enumerated the R36S (usb0 carrier changes 3 -> 4); …
+  ```
+
+  Afterwards `status` showed the link connected again, and SSH with the key
+  worked.
+
+- **11/4, step 10 (the 5 V interlock):** after **Stop the link** with the cable
+  still in, **OTG power on** refused: "5 V is coming in on the OTG port: unplug
+  the cable first, then try again." With the cable out, it said "OTG power is
+  back on."
+- **11/4, charging:** the OTG port doesn't charge the R36S under dArkOS; see
+  [Charging current](#risks-and-unknowns).
+- **Not reported separately:** steps 1 and 3 (a read-only and an optional
+  check) and step 11 (restart).
 
 ## First device test
 
@@ -402,9 +419,9 @@ of Device Manager.
     bus reset or an unplug, so the USB state reads "configured" from the first
     connection until the link stops, even with the cable out. PC Link watches
     the PC's 5 V and `usb0`'s carrier instead (see
-    [How it works](#how-it-works)). On 11/3 the 5 V bit read "no" before the
-    cable went in and "yes" after; that it drops again when the cable comes
-    out needs a device test.
+    [How it works](#how-it-works)). On 11/4 a 14-second unplug showed both:
+    the PC's 5 V went away and came back, and the PC re-enumerated the R36S
+    (see [Device test results](#device-test-results)).
 - **Double presses.** On 11/3 a 120 ms `press a` seemed to count twice in the
   PC Link menu. On 11/4 it didn't happen in five traced tries (A and Down at
   120 ms): each press gave one key from the menu's gptokeyb, whose keyboard has
@@ -414,6 +431,9 @@ of Device Manager.
 - **5 V detection.** With the PHY's OTG port unmanaged, does the status bit
   really show a PC's 5 V? **OTG power on** stays refused until PC Link has seen
   it do so, and the start's "5 V was already coming in" warning depends on it.
+  On the tested R36S it does: PC Link logged that its 5 V detection works, the
+  bit dropped when the cable came out, and **OTG power on** refused with "5 V
+  is coming in" while the cable was in.
 - **Windows binding.** RNDIS bound by itself on the test PC. Microsoft has
   deprecated RNDIS, but it's still inbox in build 26300.
 - **Screen capture.** Screenshots worked in ES, the menus and a game. Only the
@@ -437,11 +457,17 @@ of Device Manager.
 
   Both are very unlikely: the window is milliseconds.
 
-- **Charging current.** With the PC's 5 V on the OTG port, the charger may draw
-  up to dArkOS's board-file limit (1,500 mA input) rather than card mode's
-  500 mA. That's why the cable goes straight into a laptop USB-C port, never a
-  hub or dock. It's still unknown whether that port feeds the charger under
-  dArkOS.
+- **Charging current.** With the PC's 5 V on the OTG port, the charger could
+  draw up to dArkOS's board-file limit (1,500 mA input) rather than card
+  mode's 500 mA. On the tested R36S the battery doesn't charge from that port:
+  during a link, `/sys/class/power_supply/usb` read `online=0` with the PC's
+  5 V on the OTG port, and sessions without the R36S's own charger drained the
+  battery by about 10% an hour. With a wall charger in the DC port (`ac` read
+  `online=1`), the battery charged at about 1.0–1.15 A, from 12% to 17% in 11
+  minutes. (In USB card mode, under EmuELEC's kernel, `usb` reads `online=1`.)
+  Other boards may be wired differently, so the cable still goes straight into
+  a laptop USB-C port, never a hub or dock. For long sessions, plug the R36S's
+  charger into its DC port.
 - **OTG power stays off after a session.** A Wi-Fi dongle or controller won't
   work until **OTG power on** or a restart. This is deliberate: it's the safe
   side.
