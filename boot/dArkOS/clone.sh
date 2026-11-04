@@ -342,6 +342,27 @@ setup_audio() {
   cp_if_exists "$QUIRKS_DIR/asoundrc" "/home/ark/.asoundrc" "yes" || true
 }
 
+# ==================== 时钟 ====================
+# 开机时 systemd 会把系统时间推进到 timesyncd 上次保存的时间 (timesync/clock 的修改时间), 防止时间倒退。
+# RTC 若在本系统之外被改正 (例如在其他系统或 PC 上), 这个更晚的保存时间会在每次开机时盖过正确的 RTC,
+# 直到真实时间追上它。RTC 读数可信 (2025 年以后、UTC) 而系统时间比它快 5 分钟以上时, 以 RTC 为准。
+sync_clock_from_rtc() {
+  local rtc now saved="/var/lib/systemd/timesync/clock"
+  rtc="$(cat /sys/class/rtc/rtc0/since_epoch 2>/dev/null)"
+  [[ "$rtc" =~ ^[0-9]+$ ]] || return 0
+  # 掉电复位后的 RTC 读数早于 2025-01-01, 此时保存的时间更接近真实时间
+  (( rtc >= 1735689600 )) || return 0
+  grep -qx LOCAL /etc/adjtime 2>/dev/null && return 0
+  # NTP 已同步时系统时间才是准的
+  [[ -e /run/systemd/timesync/synchronized ]] && return 0
+  now="$(date +%s)"
+  (( now - rtc > 300 )) || return 0
+  msg "Clock is $(( now - rtc ))s ahead of the RTC: setting it from the RTC"
+  date -u -s "@$rtc" > /dev/null || { warn "Could not set the clock from the RTC"; return 0; }
+  [[ -f "$saved" ]] && touch -d "@$rtc" "$saved"
+  return 0
+}
+
 # ==================== 国际化配置 ====================
 apply_localization() {
   local lang="$1" es_lang ra_lang ppsspp_lang timezone
@@ -390,6 +411,9 @@ apply_localization() {
 
 # ==================== 主流程 ====================
 main() {
+  # 先校正时钟, 后面的日志与文件时间才正确
+  sync_clock_from_rtc
+
   # 在调用 console_detect 之前先记录 .console 是否存在
   local first_boot="no"
   [[ ! -f "$CONSOLE_FILE" ]] && first_boot="yes"
