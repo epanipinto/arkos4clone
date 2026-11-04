@@ -68,7 +68,21 @@ sync_boot() {
 
 sync_rootfs() {
   # $1: rootfs/ 子目录, $2: 属主 (如 1002:1002)
+  # --chown/--chmod 也会作用于镜像里已有的目录, 包括 / 本身和 /etc、/home/ark 等, 把它们改成 777 并属于 ark:
+  # 任何用户都能改写 / 与 /etc, OpenSSH 的 StrictModes 也因此拒绝所有 authorized_keys。
+  # 同步前记下这些已有目录的属主与权限, 同步后还原; 同步进来的文件与新建的目录仍为 777
+  local saved d owner mode
+  saved="$(mktemp)"
+  while IFS= read -r -d '' d; do
+    [[ -d "$MOUNT_DIR/root/$d" && ! -L "$MOUNT_DIR/root/$d" ]] || continue
+    printf '%s %s\0' "$(sudo stat -c '%u:%g %a' "$MOUNT_DIR/root/$d")" "$d" >> "$saved"
+  done < <(cd "rootfs/$1" && find . -type d -print0)
   fatal sudo rsync $RSYNC_ROOT_OPTS --exclude='/home/ark/.config/retroarch*/cores/*.so.xz' --chown="$2" --chmod=D0777,F0777 "rootfs/$1/" "$MOUNT_DIR/root/"
+  while IFS=' ' read -r -d '' owner mode d; do
+    safe sudo chown "$owner" "$MOUNT_DIR/root/$d"
+    safe sudo chmod "$mode" "$MOUNT_DIR/root/$d"
+  done < "$saved"
+  rm -f "$saved"
 }
 
 pack_roms_tar() {
