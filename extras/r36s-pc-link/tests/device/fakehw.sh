@@ -4,8 +4,9 @@
 # - devmem: registers are files in $FAKEHW/regs; GRF writes honour the write-enable mask; every write is logged in
 #   $FAKEHW/writes.log. The OTG status register reports 5 V when GPIO3_A4 (OTG power) is on or $FAKEHW/cable is 1,
 #   and dwc2's GINTSTS reports device mode only while the GRF forces the ID input to "device".
-# - sysfs: the UDC ff300000.usb (state file), dwc2 bound, net/usb0; configfs: usb_gadget; the device tree: written
-#   from a real board file (dtb2fs.py), $1, default dArkOS4Clone's Type2 board file.
+# - sysfs: the UDC ff300000.usb (state file), dwc2 bound, net/usb0 (statistics, carrier 0, carrier_changes 1: up,
+#   no PC yet); configfs: usb_gadget; the device tree: written from a real board file (dtb2fs.py), $1, default
+#   dArkOS4Clone's Type2 board file.
 # - modprobe, nmcli, systemctl, systemd-run and dmesg mocks in $FAKEHW/bin (systemctl and systemd-run also in
 #   /usr/local/sbin, for sudo), logging to $FAKEHW/calls. systemd-run starts the command with setsid and keeps its
 #   pid in $FAKEHW/unit-<name>.pid; systemctl show answers MainPID from $FAKEHW/mainpid-<unit>, and ActiveState from
@@ -17,8 +18,13 @@ FAKEHW=/tmp/fakehw
 W=${W:-/w}
 rm -rf $FAKEHW
 mkdir -p $FAKEHW/bin $FAKEHW/regs $FAKEHW/sys/class/udc/ff300000.usb $FAKEHW/sys/bus/platform/drivers/dwc2/ff300000.usb \
-  $FAKEHW/sys/class/net/usb0 $FAKEHW/configfs/usb_gadget/pclink/functions/rndis.usb0 $FAKEHW/dt
+  $FAKEHW/sys/class/net/usb0/statistics $FAKEHW/configfs/usb_gadget/pclink/functions/rndis.usb0 $FAKEHW/dt
 echo "not attached" > $FAKEHW/sys/class/udc/ff300000.usb/state
+for s in rx_packets tx_packets rx_errors tx_errors rx_dropped tx_dropped rx_length_errors; do
+  echo 0 > $FAKEHW/sys/class/net/usb0/statistics/$s
+done
+echo 0 > $FAKEHW/sys/class/net/usb0/carrier
+echo 1 > $FAKEHW/sys/class/net/usb0/carrier_changes
 echo usb0 > $FAKEHW/configfs/usb_gadget/pclink/functions/rndis.usb0/ifname
 echo 0 > $FAKEHW/cable
 echo 1 > $FAKEHW/es-active

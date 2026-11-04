@@ -22,8 +22,9 @@
 #  3. Adds a configfs RNDIS gadget with Microsoft OS descriptors, so Windows uses its own driver. The R36S is
 #     <subnet>.1 and dnsmasq gives the PC an address (no gateway, no DNS).
 #  4. Starts its own sshd on <subnet>.1:2222 (Wi-Fi: every address): keys only, user ark, keys from authorized_keys.
-# While the link runs it logs what it sees (USB state with the kernel's messages, traffic, an ARP check of the PC) and
-# puts back what something else takes away (the network address, dnsmasq, sshd), saying so in pclinkd.log.
+# While the link runs it logs what it sees (USB state, the PC's 5 V and usb0's carrier, with the kernel's messages;
+# traffic; an ARP check of the PC) and puts back what something else takes away (the network address, dnsmasq, sshd),
+# saying so in pclinkd.log.
 # Registers are only touched when the device tree matches that layout (check_board).
 # Optional pclink.conf next to this script: subnet=10.36.36 and port=2222 lines.
 # A fixed PATH: dArkOS's sudo keeps the caller's (sudoers.d/ark-no-secure-path). The tests put their mocks first.
@@ -313,11 +314,23 @@ last_words() {
   tail -n "${2:-2}" "$1" 2> /dev/null | tr -d '\r' | paste -sd '|' -
 }
 
-# Packets to and from the PC on the USB network, with errors and drops: does data still flow?
+# Packets to and from the PC on the USB network, with errors and drops: does data still flow? Length errors are harmless
+# here: this kernel's RNDIS code passes on the empty remainder of each USB transfer from the PC (none when Windows pads
+# the transfer to a multiple of 512 bytes), and usb0 counts each as one.
 traffic() {
   [ -n "$IFACE" ] || return 0
-  awk -v i="$IFACE" '{ sub(/^ +/, "") } index($0, i ":") == 1 { sub(/^[^:]*: */, ""); split($0, f, / +/)
-    printf "; %s packets in %s, out %s (errors %s/%s, dropped %s/%s)", i, f[2], f[10], f[3], f[11], f[4], f[12] }' /proc/net/dev
+  local k
+  local -A n
+  for k in rx_packets tx_packets rx_errors tx_errors rx_dropped tx_dropped rx_length_errors; do
+    n[$k]=$(cat "$SYS/class/net/$IFACE/statistics/$k" 2> /dev/null) || return 0
+  done
+  printf '; %s packets in %s, out %s (errors %s/%s' "$IFACE" "${n[rx_packets]}" "${n[tx_packets]}" "${n[rx_errors]}" "${n[tx_errors]}"
+  if [ "${n[rx_length_errors]}" -ge "${n[rx_errors]}" ] && [ "${n[rx_length_errors]}" -gt 0 ]; then
+    printf ', all harmless length errors'
+  elif [ "${n[rx_length_errors]}" -gt 0 ]; then
+    printf ', %s of them harmless length errors' "${n[rx_length_errors]}"
+  fi
+  printf ', dropped %s/%s)' "${n[rx_dropped]}" "${n[tx_dropped]}"
 }
 
 # The kernel's messages about the OTG port (dwc2, the gadget, RNDIS) since the last ones logged, in KNEWS (not printed:
@@ -393,8 +406,16 @@ vbus_guard() {
   return 1
 }
 
+# What the PC does, from three signals. The UDC state shows only the first connection: this kernel's dwc2 never reports
+# a bus reset or an unplug, so after that it reads "configured" until the link stops. The PC's 5 V on the port (the
+# PHY's bvalid bit, read while our own 5 V is off) shows the cable going out and in. usb0's carrier_changes, a count,
+# shows the PC setting the USB network up again (a re-enumeration), even between two looks.
+V5=          # the PC's 5 V at the last look: yes or no; empty before the first look
+V5_GONE=0    # 1 while the PC's 5 V, once seen, is gone: the cable is out, so the stall check waits
+CARRIER_N=   # usb0's carrier_changes at the last look
+CARRIER_UP=0 # 1 once usb0 had a carrier: the first comes with the first connection and isn't logged
 usb_status() {
-  local udc
+  local udc v5='' n c
   [ "${ST[state]}" = failed ] && return
   udc=$(cat "$SYS/class/udc/$UDC/state" 2> /dev/null)
   if [ "$udc" != "${ST[udc]}" ]; then
@@ -414,10 +435,53 @@ usb_status() {
   fi
   ST[pc]=$(pc_address)
   ST[otg_power]=$(vbus_state)
-  # vbus-on trusts the PHY's 5 V detection only once it has seen the PC's 5 V with our own 5 V off.
-  if [ ! -e "$RUN/detector-ok" ] && [ "${ST[otg_power]}" = off ] && five_volt_in; then
-    : > "$RUN/detector-ok"
-    log "the PHY sees the PC's 5 V with OTG power off: its 5 V detection works"
+  if [ "${ST[otg_power]}" = off ]; then
+    five_volt_in
+    case $? in 0) v5=yes ;; 1) v5=no ;; esac
+    [ "$(vbus_state)" = off ] || v5=
+  fi
+  if [ -n "$v5" ] && [ "$v5" != "$V5" ]; then
+    if [ "$v5" = yes ] && [ ! -e "$RUN/detector-ok" ]; then
+      # vbus-on trusts the PHY's 5 V detection only once it has seen the PC's 5 V with our own 5 V off.
+      : > "$RUN/detector-ok"
+      log "the PHY sees the PC's 5 V with OTG power off: its 5 V detection works"
+    elif [ -n "$V5" ]; then
+      kernel_usb_news
+      if [ "$v5" = yes ]; then
+        log "USB: the PC's 5 V came in$KNEWS"
+      else
+        log "USB: the PC's 5 V went away (cable unplugged?)$(traffic)$KNEWS"
+      fi
+    fi
+    if [ "$v5" = yes ]; then
+      V5_GONE=0
+      if [ "${ST[state]}" = ready ] && [ "$udc" = configured ]; then
+        ST[state]=connected
+        ST[message]="Connected to the PC."
+      fi
+    elif [ "$V5" = yes ]; then
+      V5_GONE=1
+      if [ "${ST[state]}" = connected ]; then
+        ST[state]=ready
+        ST[message]="Waiting for the PC (cable unplugged?)."
+      fi
+    fi
+    V5=$v5
+  fi
+  if n=$(cat "$SYS/class/net/$IFACE/carrier_changes" 2> /dev/null) && c=$(cat "$SYS/class/net/$IFACE/carrier" 2> /dev/null); then
+    if [ -z "$CARRIER_N" ]; then
+      [ "$c" = 1 ] && CARRIER_UP=1
+    elif [ "$n" != "$CARRIER_N" ]; then
+      if [ "$c" = 0 ]; then
+        kernel_usb_news
+        log "USB: $IFACE lost its carrier (carrier changes $CARRIER_N -> $n)$(traffic)$KNEWS"
+      elif [ "$CARRIER_UP" = 1 ]; then
+        kernel_usb_news
+        log "USB: the PC re-enumerated the R36S ($IFACE carrier changes $CARRIER_N -> $n)$(traffic)$KNEWS"
+      fi
+      [ "$c" = 1 ] && CARRIER_UP=1
+    fi
+    CARRIER_N=$n
   fi
 }
 
@@ -474,13 +538,14 @@ net_check() {
 }
 
 # Every 30 s while the PC is connected: an ARP request to it, which Windows answers even when its firewall drops
-# pings. No answer three times in a row while USB still says configured: the USB data path has stalled.
+# pings. No answer three times in a row while USB still says configured: the USB data path has stalled. Not while the
+# PC's 5 V is gone: then the cable is out.
 PROBE_SECS=${PCLINK_PROBE_SECS:-30}
 PROBE_MISSES=0
 PROBE_CHECK=
 pc_probe() {
   local pc=${ST[pc]}
-  if [ "${ST[state]}" != connected ] || [ "${ST[udc]}" != configured ] || [ -z "$pc" ] || [ -z "$IFACE" ]; then
+  if [ "${ST[state]}" != connected ] || [ "$V5_GONE" = 1 ] || [ "${ST[udc]}" != configured ] || [ -z "$pc" ] || [ -z "$IFACE" ]; then
     PROBE_MISSES=0
     PROBE_CHECK=
     return

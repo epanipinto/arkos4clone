@@ -10,8 +10,10 @@ and a shell. The link uses the OTG USB cable, or Wi-Fi with a dongle.
   asks for the PC, and keeps it off until you turn it back on or restart.
 - **Status: experimental.** Tested on an R36S clone ("clone type2 panel1 amp",
   dArkOS4Clone 20261008) on 11/3 and 11/4; see
-  [Device test results](#device-test-results). Stopping the link and **OTG power
-  on** afterwards haven't been tested on the device yet.
+  [Device test results](#device-test-results). Still to test on the device:
+  unplugging the cable while the link runs (step 5 of the
+  [first device test](#first-device-test)), and stopping the link and **OTG
+  power on** afterwards (step 10).
 - **Device:** RK3326 boards laid out like the R36S clone: `pclinkd.sh check`
   reads the board file at runtime and refuses anything else (the OTG port must
   be `otg`, its 5 V `vbus_host` on GPIO3_A4, the PHY's OTG port disabled).
@@ -33,14 +35,14 @@ and a shell. The link uses the OTG USB cable, or Wi-Fi with a dongle.
 ## How it works
 
 **On the R36S**, **Options > Tools > PC Link** starts `pclinkd.sh` as the
-systemd service `pclink`, then returns to the games; the link stays up. Over USB
-it:
+systemd service `pclink`, then returns to the games; the link stays up. Over
+USB it:
 
 1. **Switches the OTG 5 V off.** dArkOS's board file keeps it always on through
-   `vbus_host`, GPIO3_A4. The service clears that pin, reads it back, and checks
-   it four times a second while the link runs. If the pin can't be confirmed
-   off, the USB link drops at once; if that lasts 2 seconds, PC Link powers the
-   R36S off, which cuts the 5 V for certain.
+   `vbus_host`, GPIO3_A4. The service clears that pin, reads it back, and
+   checks it four times a second while the link runs. If the pin can't be
+   confirmed off, the USB link drops at once; if that lasts 2 seconds, PC Link
+   powers the R36S off, which cuts the 5 V for certain.
 2. **Makes the OTG port a USB device.** It forces the USB PHY's ID input to
    "device" in its GRF register. These are the same two writes the PHY driver's
    own `otg_mode=peripheral` makes; that switch refuses here because the board
@@ -50,24 +52,30 @@ it:
 3. **Adds a USB network.** A configfs RNDIS gadget with Microsoft OS
    descriptors, so Windows uses its own driver. The R36S is `10.36.36.1`;
    dnsmasq gives the PC `10.36.36.10`–`.20`, with no gateway or DNS.
-4. **Starts its own sshd** on port 2222: keys only, user `ark`, its own host key
-   (`/var/lib/pclink`). It is separate from dArkOS's ssh service. Its
-   `StrictModes` check is off, because dArkOS4Clone's `/` is world-writable and
-   the check would refuse every key (see
+4. **Starts its own sshd** on port 2222: keys only, user `ark`, its own host
+   key (`/var/lib/pclink`). It is separate from dArkOS's ssh service. Its
+   `StrictModes` check is off, because dArkOS4Clone's `/` is world-writable
+   and the check would refuse every key (see
    [Why runtime](#why-runtime-not-a-boot-mode)).
 
 Stopping the link undoes steps 2–4 and checks the result. If the gadget stays
 bound, the ID input won't go back or the OTG 5 V reads on, the link shows
 `failed` and asks you to unplug and restart.
 
-**While the link runs**, PC Link writes what it sees to its log, which **Show
-the log** shows on the R36S:
+**While the link runs**, PC Link writes what it sees to its log, which
+**Show the log** shows on the R36S:
 
 - every change of the USB state, with the packet counts and the kernel's USB
-  messages;
+  messages. The receive errors this kernel counts for every USB transfer are
+  labelled harmless (see [Risks and unknowns](#risks-and-unknowns));
+- the PC's 5 V on the port and `usb0`'s carrier. This kernel's dwc2 never
+  reports a bus reset or an unplug, so after the first connection the USB state
+  stays "configured". The 5 V shows the cable going out, when the link goes
+  back to **Waiting for the PC**, and coming back in. The carrier shows the PC
+  re-enumerating the R36S;
 - an ARP check of the PC every 30 seconds, which Windows answers even with its
   firewall on. Three misses in a row while USB says connected are logged as a
-  stall;
+  stall, but not while the cable is out;
 - whether `usb0` keeps its address and dnsmasq and sshd keep running. Anything
   that goes missing is logged with what was found, then put back;
 - how the service ended. If it was killed, systemd's clean-up step undoes the
@@ -75,11 +83,12 @@ the log** shows on the R36S:
 
 The OTG 5 V stays off until a restart, or **OTG power on** in the same menu.
 That refuses while 5 V comes in from outside. It also refuses until PC Link has
-seen the PC's 5 V on the port since the last restart: until then it can't trust
-the 5 V detection to tell whether a cable is in.
+seen the PC's 5 V on the port since the last restart: until then it can't
+trust the 5 V detection to tell whether a cable is in.
 
 **Over Wi-Fi**, only step 4 runs, on every address, and the USB port is left
-alone. One link runs at a time: stop the Wi-Fi link before starting the USB one.
+alone. One link runs at a time: stop the Wi-Fi link before starting the USB
+one.
 
 **Commands from the PC** run `pclink_agent.py` on the R36S, as root through
 `sudo`:
@@ -139,8 +148,8 @@ Once, on the PC, from this folder:
    ```
 
 2. Reach the cards with **USB card mode** or the laptop's SD slot. In Explorer,
-   `EASYROMS` is the dArkOS card's games partition; a second games card has its
-   own label.
+   `EASYROMS` is the dArkOS card's games partition; a second games card has
+   its own label.
 3. Check the plan, then install. `I:` and `E:` are examples: use the letters
    Explorer shows.
 
@@ -150,8 +159,8 @@ Once, on the PC, from this folder:
    ```
 
    This copies `PC Link.sh` and `.pclink\` into both Tools folders, with the
-   public key as `.pclink\authorized_keys`. Install into both: while dArkOS uses
-   the second card (**Switch to SD2 for Roms**), the Tools menu shows that
+   public key as `.pclink\authorized_keys`. Install into both: while dArkOS
+   uses the second card (**Switch to SD2 for Roms**), the Tools menu shows that
    card's `tools`. The installer accepts `tools` folders on `EASYROMS` or
    `R36S-GAMES`; add `--force` for another label.
 
@@ -160,10 +169,11 @@ Once, on the PC, from this folder:
 - **Other subnet:** if `10.36.36.x` clashes with a network the PC uses (a VPN,
   say), add `--subnet 192.168.236`, then use `--host 192.168.236.1` on the PC.
   `--port` changes 2222.
-- **Remove:** run the installer with `--remove`. The OTG 5 V comes back with the
-  next restart.
+- **Remove:** run the installer with `--remove`. The OTG 5 V comes back with
+  the next restart.
 - **Update:** stop the link, open **USB card mode**, and run the same two
-  installer commands. They replace the files, and the next **Start** uses them.
+  installer commands. They replace the files, and the next **Start** uses
+  them.
 
 ## Using it
 
@@ -199,9 +209,9 @@ Once, on the PC, from this folder:
 the address it shows: `r36s-remote.py --host 192.168.1.50 status`. Set
 `R36S_HOST` to skip typing it.
 
-**When something goes wrong**, open **Options > Tools > PC Link > Show the log**
-on the R36S. It shows the link right now, PC Link's log and the SSH server's log
-(`sshd.log`), which says why a key was refused. While SSH works,
+**When something goes wrong**, open **Options > Tools > PC Link > Show the
+log** on the R36S. It shows the link right now, PC Link's log and the SSH
+server's log (`sshd.log`), which says why a key was refused. While SSH works,
 `r36s-remote.py logs pclink` shows the same logs on the PC.
 
 **Rules:**
@@ -229,8 +239,8 @@ on the R36S. It shows the link right now, PC Link's log and the SSH server's log
 | `run "<cmd>" [--root]`, `shell`         | A command or shell as `ark` (`--root`: with sudo)                                                |
 | `stop-link`, `forget-host`              | Stops the link from the PC; forgets the pinned host key after a re-flash                         |
 
-- **No game in the way:** settings and launches refuse while a game runs, unless
-  you add `--force`, which stops it without saving.
+- **No game in the way:** settings and launches refuse while a game runs,
+  unless you add `--force`, which stops it without saving.
 - **Not in ES's history:** games started with `launch` run outside ES, so they
   don't appear in ES's last-played list.
 - **Press length:** 50 ms while a Tools menu is up, 120 ms otherwise;
@@ -263,10 +273,20 @@ On an R36S clone ("clone type2 panel1 amp", dArkOS4Clone 20261008, kernel
   one key (see [Double presses](#risks-and-unknowns)). Presses in Tools menus
   are now 50 ms, and the menu changes above (**Start** while on, No by default,
   the last item kept) went onto the R36S the same night without stopping the
-  link (00:35 to 01:10), checked against these files by SHA-256.
-- **Not yet tested:** step 10 of the [first device test](#first-device-test):
-  stopping the link with the cable in, and **OTG power on** afterwards (the 5 V
-  interlock).
+  link (00:35 to 01:10).
+- **11/4, receive errors:** `usb0` counted about one receive error per packet
+  received while everything worked. They come from how this kernel's RNDIS code
+  counts USB transfers, not from lost data: 240 pings and 300 UDP packets all
+  arrived. **Show the log** now labels them harmless.
+- **Installed:** the device files here (`PC Link.sh`, `pclinkd.sh`,
+  `pclink_agent.py`) are the ones on the R36S, checked by SHA-256.
+- **Not yet tested:**
+  - step 5 of the [first device test](#first-device-test): unplugging the cable
+    while the link runs. This kernel's dwc2 never reports an unplug, so PC Link
+    watches the PC's 5 V bit instead; whether that bit drops when the cable
+    comes out hasn't been checked yet;
+  - step 10: stopping the link with the cable in, and **OTG power on**
+    afterwards (the 5 V interlock).
 
 ## First device test
 
@@ -276,41 +296,41 @@ On an R36S clone ("clone type2 panel1 amp", dArkOS4Clone 20261008, kernel
 - The OTG port is empty and the laptop's charger is connected.
 - Optional: an inline USB-C power meter between the cable and the laptop.
 
-Note what each step shows. Wherever a stop condition says "stop the link", use
-the PC Link menu.
+Note what each step shows. Wherever a stop condition says "stop the link",
+use the PC Link menu.
 
 1. **Read-only check.** Open **PC Link**: it should show `Link: off` and
    `OTG power: on`.
-2. **Start.** Choose **Start over the USB cable**, then **Yes**. Within about 10
-   seconds it should show **Waiting for the PC**.
+2. **Start.** Choose **Start over the USB cable**, then **Yes**. Within about
+   10 seconds it should show **Waiting for the PC**.
    - **Stop if** it shows **PC Link didn't start**. A message starting
      `Not started:` means nothing changed. Note it, and don't retry.
    - **The OTG port stayed in host mode** means dwc2 won't change role at
-     runtime; everything was put back. Report it: this is when the one-shot boot
-     mode is needed.
+     runtime; everything was put back. Report it: this is when the one-shot
+     boot mode is needed.
    - **Stop if** the R36S freezes. Hold the power button for 10 seconds and turn
      it on again: a normal start undoes everything.
 3. **Optional power check.** With an OTG adapter, plug a USB device that has a
    light (or the Wi-Fi dongle) into the OTG port. It must stay dark. Unplug it.
    - **Stop if** it lights up: the 5 V didn't switch off. Don't connect the PC;
      stop the link and report.
-4. **Connect.** Plug the OTG port into a laptop USB-C port. Within about 10
-   seconds:
+4. **Connect.** Plug the OTG port into a laptop USB-C port. Within about
+   10 seconds:
    - Device Manager shows a "Remote NDIS Compatible Device" (or a similar RNDIS
      adapter) under Network adapters.
    - The R36S shows **Connected**.
    - `uv run r36s-remote.py wait` reports `PC Link is up`.
 
    Stop conditions:
-   - **USB stays `not attached` for 30 seconds:** dwc2 switched role, but the PC
-     doesn't see it. Note what **Show the log** says, stop the link, unplug and
-     report.
+   - **USB stays `not attached` for 30 seconds:** dwc2 switched role, but the
+     PC doesn't see it. Note what **Show the log** says, stop the link, unplug
+     and report.
    - **Windows shows an unknown device, Code 10 or "USB device not
      recognized":** note what Device Manager says. Try **Update driver > Let me
      pick > Network adapters > Microsoft > Remote NDIS Compatible Device**. If
      that fails, stop the link and report.
-   - **Windows warns of a power surge, the laptop's port shuts off, or the R36S
-     resets:** unplug at once and report.
+   - **Windows warns of a power surge, the laptop's port shuts off, or the
+     R36S resets:** unplug at once and report.
    - **The R36S powers itself off:** PC Link couldn't keep its OTG 5 V off.
      Unplug, and report it.
    - **`Permission denied (publickey)`:** open **Show the log**. Under SSH
@@ -318,15 +338,20 @@ the PC Link menu.
      it takes; compare that with the fingerprint `setup-key` printed.
 
 5. **Status.** Run `r36s-remote.py status`. It should show
-   `Link: usb, connected (PC 10.36.36.1x)`, `OTG power: off` and
-   `5 V seen on the port: yes` (that 5 V is the PC's).
-   - If `5 V seen` says `no` while connected, the PHY doesn't report outside 5
-     V. **OTG power on** then stays refused, so restart the R36S with the cable
-     out to get OTG power back. Report it.
+   `Link: usb, connected (PC 10.36.36.1x)`, `OTG power: off` and `5 V seen on
+the port: yes` (that 5 V is the PC's).
+   - If `5 V seen` says `no` while connected, the PHY doesn't report outside
+     5 V. **OTG power on** then stays refused, so restart the R36S with the
+     cable out to get OTG power back. Report it.
    - Leave the link idle for 5 minutes, then run `status` again. If it fails,
      note the time and open **Show the log**. It records whether the PC put the
      USB link to sleep, the network lost its address, the PC stopped answering
      or the service ended.
+   - Unplug the cable for 5 seconds, then plug it back in. **Show the log**
+     should show "the PC's 5 V went away (cable unplugged?)", then "the PC's
+     5 V came in" and "the PC re-enumerated the R36S", and `wait` should report
+     the link up again. If the first line is missing, the 5 V bit doesn't drop
+     on unplug: report it.
 6. **Screen.** Run `screenshot --open` in ES and again in a game. The image
    should match the screen, the right way up and in the right colours.
    - **Report if** it's black, garbled or shows the text console. Include what
@@ -339,20 +364,20 @@ the PC Link menu.
 8. **Games.** Compare `launch <rom> --dry-run` with what ES runs (`logs es` or
    the R36S settings notes). Then launch for real, and run `quit-game`. ES
    should come back in 10–30 seconds.
-9. **Settings.** Run `es set DrawClock true`: ES restarts with a clock. Then run
-   `es set DrawClock false`.
+9. **Settings.** Run `es set DrawClock true`: ES restarts with a clock. Then
+   run `es set DrawClock false`.
 10. **Stop.**
     - With the cable still in, **Stop the link**, then try **OTG power on**: it
       must refuse with "5 V is coming in".
     - Unplug, then **OTG power on**: "OTG power is back on".
-    - If it refuses with "hasn't seen a PC's 5 V", the 5 V detection didn't work
-      (see step 5): restart the R36S with the cable out instead.
+    - If it refuses with "hasn't seen a PC's 5 V", the 5 V detection didn't
+      work (see step 5): restart the R36S with the cable out instead.
 11. **Restart.** Restart the R36S. dArkOS starts as usual, the link is off and
     the OTG port is powered.
 
 **Keep for the report:** the output of `logs pclink` and `logs dmesg` (or, if
-SSH doesn't work, a photo of each page of **Show the log**), and a screenshot of
-Device Manager.
+SSH doesn't work, a photo of each page of **Show the log**), and a screenshot
+of Device Manager.
 
 ## Risks and unknowns
 
@@ -362,17 +387,30 @@ Device Manager.
   bound RNDIS by itself.
 - **Link stalls.** In an earlier test the R36S stopped answering within minutes
   while Windows still showed the adapter as up; on 11/3 the link ran 7 minutes
-  without one. PC Link logs the likely causes: the USB state, the network
-  address, an ARP check of the PC, and how the service ended.
-  - On 11/4, after an hour up, `usb0` counted about 99% of the packets it
-    received as errors (2917 of 2957) while SSH worked normally. **Show the
-    log** shows the count; worth watching next to any stall.
-- **Double presses.** On 11/3 a 120 ms `press a` seemed to count twice in the PC
-  Link menu. On 11/4 it didn't happen in five traced tries (A and Down at 120
-  ms): each press gave one key from the menu's gptokeyb, whose keyboard has no
-  kernel key repeat. Presses in Tools menus are now 50 ms and the menu shrugs
-  off a stray press; if one shows up again, `press --trace` shows where it comes
-  from.
+  without one. PC Link logs the likely causes: the USB state, the PC's 5 V and
+  `usb0`'s carrier, the network address, an ARP check of the PC, and how the
+  service ended.
+  - **Not the cause: the receive errors.** **Show the log** counts about one
+    receive error per packet received and labels them "harmless length
+    errors". They are an accounting quirk of this kernel's RNDIS code, not lost
+    data. After it takes the last packet out of a USB transfer, the code hands
+    on the empty remainder, and `usb0` counts that as a length error. On 11/4,
+    240 pings and 300 UDP packets all arrived. Transfers that Windows pads to a
+    multiple of 512 bytes added no errors, and the other error kinds (CRC,
+    frame, overrun) stayed at 0.
+  - **Unplugs and re-enumerations.** This kernel's dwc2 driver never reports a
+    bus reset or an unplug, so the USB state reads "configured" from the first
+    connection until the link stops, even with the cable out. PC Link watches
+    the PC's 5 V and `usb0`'s carrier instead (see
+    [How it works](#how-it-works)). On 11/3 the 5 V bit read "no" before the
+    cable went in and "yes" after; that it drops again when the cable comes
+    out needs a device test.
+- **Double presses.** On 11/3 a 120 ms `press a` seemed to count twice in the
+  PC Link menu. On 11/4 it didn't happen in five traced tries (A and Down at
+  120 ms): each press gave one key from the menu's gptokeyb, whose keyboard has
+  no kernel key repeat. Presses in Tools menus are now 50 ms and the menu
+  shrugs off a stray press; if one shows up again, `press --trace` shows where
+  it comes from.
 - **5 V detection.** With the PHY's OTG port unmanaged, does the status bit
   really show a PC's 5 V? **OTG power on** stays refused until PC Link has seen
   it do so, and the start's "5 V was already coming in" warning depends on it.
@@ -400,9 +438,10 @@ Device Manager.
   Both are very unlikely: the window is milliseconds.
 
 - **Charging current.** With the PC's 5 V on the OTG port, the charger may draw
-  up to dArkOS's board-file limit (1,500 mA input) rather than card mode's 500
-  mA. That's why the cable goes straight into a laptop USB-C port, never a hub
-  or dock. It's still unknown whether that port feeds the charger under dArkOS.
+  up to dArkOS's board-file limit (1,500 mA input) rather than card mode's
+  500 mA. That's why the cable goes straight into a laptop USB-C port, never a
+  hub or dock. It's still unknown whether that port feeds the charger under
+  dArkOS.
 - **OTG power stays off after a session.** A Wi-Fi dongle or controller won't
   work until **OTG power on** or a restart. This is deliberate: it's the safe
   side.
@@ -421,16 +460,16 @@ Device Manager.
 - **Security.**
   - PC Link's sshd takes keys only and has its own host key.
   - Its StrictModes check is off. Its key file and folders are root's, in
-    `/run/pclink`, and the only other user, `ark`, has passwordless sudo anyway,
-    so the check would add nothing here.
-  - dArkOS's own Remote Services still use `ark` / `ark`, and every dArkOS4Clone
-    image ships the same stock SSH host keys.
+    `/run/pclink`, and the only other user, `ark`, has passwordless sudo
+    anyway, so the check would add nothing here.
+  - dArkOS's own Remote Services still use `ark` / `ark`, and every
+    dArkOS4Clone image ships the same stock SSH host keys.
   - The agent runs as root, as `ark` can anyway through passwordless sudo.
 
 ## Tests
 
-Everything below runs off the device, against the dArkOS4Clone image (read only,
-through an overlay). Set `R36S_IMAGE` to the image file (for example
+Everything below runs off the device, against the dArkOS4Clone image (read
+only, through an overlay). Set `R36S_IMAGE` to the image file (for example
 `D:\dArkOS4Clone-20261008.img`). Without it, the service and menu suites run in
 a Debian 13 stand-in (the same OpenSSH, dnsmasq and sudo, and the same `ark`
 user), and the suites that need dArkOS's files are skipped. Run it all with:
@@ -443,19 +482,19 @@ The board-file fixtures are copies of this repository's
 `boot/dArkOS/consoles/clone type2 panel1 amp` and `clone type1 panel5` board
 files; `darkos-keys.gptk` and `darkos-go-super-gamecontrollerdb.txt` are
 dArkOS's `/opt/inttools/keys.gptk` and the built-in pad's line from its
-`gamecontrollerdb.txt`. The negative case, EmuELEC's card-mode board file, isn't
-in the repository: copy the one USB card mode's installer makes to
-`tests/device/fixtures/emuelec-card-mode.dtb` to run it; without it those checks
-are skipped.
+`gamecontrollerdb.txt`. The negative case, EmuELEC's card-mode board file,
+isn't in the repository: copy the one USB card mode's installer makes to
+`tests/device/fixtures/emuelec-card-mode.dtb` to run it. Without it, those
+checks are skipped and the service suite runs 188 of its 194 checks.
 
-| Suite                                                  | Where                                                                                                         | Covers                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
-| ------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `tests/device/test_pclinkd.sh` (177 checks)            | arm64 chroot of dArkOS's rootfs, or the Debian 13 stand-in; fake registers; real `ip`, dnsmasq, sshd, ssh     | Real board files (Type2 and Type1 pass, EmuELEC's is refused), 5 V off before the role switch, gadget and OS descriptors, key-only SSH on a world-writable `/` as on the R36S (a StrictModes sshd refuses the key there; PC Link's takes it), the logs (key fingerprints, USB state with kernel messages and traffic), watchdogs (OTG power, network address, dnsmasq, sshd, the stall check), verified stop and restore, OTG power on safety, failure paths (dwc2 stuck in host mode, OTG power that won't stay off, a killed service and its clean-up), one link at a time, the lock, `pclink.conf` |
-| `tests/device/test_agent.py` (38 tests)                | the same chroot (the 7 button tests run natively, below)                                                      | ES settings on the real `es_settings.cfg`, launch commands against the real `es_systems.cfg` (ES's escaping, defaults and file precedence), ES stopped for a launch and back after it or after a failure, game wrapper as `ark`, quit and `--force`, fb0 PNG, button map against the board file, press length (50 ms while a Tools menu's gptokeyb runs, 120 ms otherwise) and its limits, process names that aren't UTF-8 (as two of the R36S's IRQ threads are)                                                                                                                                     |
-| `tests/device/test_menu.sh` (36 checks)                | the same chroot, or the stand-in; a fake `dialog` and `sudo`                                                  | The Tools menu: **Start** says when the link is already on (USB or Wi-Fi) and starts nothing, the OTG questions say whether the port is powered and default to No, a stray Enter answers No or repeats the last item (never **Start**), **OTG power on** is refused while the link runs                                                                                                                                                                                                                                                                                                               |
-| `run-native-tests.sh` (amd64 and arm64)                | Debian with the kernel's uapi headers; on amd64 also dArkOS's own gptokeyb, built from the commit dArkOS uses | 30 of 30 DRM and evdev ABI values; button injection into a uinput "GO-Super Gamepad" like the R36S's (press, chord, release on interrupt); with gptokeyb and dArkOS's `keys.gptk`, as in a Tools menu: one key per press (A, Down held 600 ms, Select), no key repeat on its keyboard, all shown by `press --trace`                                                                                                                                                                                                                                                                                   |
-| `tests/test_device_container.py`                       | Docker from Windows                                                                                           | Runs the suites above (the service and menu suites in the dArkOS chroot and in the Debian 13 stand-in) and an end-to-end session: Windows `ssh.exe` and `r36s-remote.py` → dArkOS's sshd (PC Link's config) → the agent                                                                                                                                                                                                                                                                                                                                                                               |
-| `tests/test_r36s_remote.py`, `test_install_pc_link.py` | Windows                                                                                                       | CLI behaviour with a fake SSH layer, `wait`, `stop-link`, `press` (the R36S picks the length unless `--hold-ms` is given; `--trace`), SSH errors explained (a refused key: the device's log and the key's fingerprint), keys never printed, installer dry run, read-back and remove                                                                                                                                                                                                                                                                                                                   |
+| Suite                                                  | Where                                                                                                         | Covers                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| ------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `tests/device/test_pclinkd.sh` (194 checks)            | arm64 chroot of dArkOS's rootfs, or the Debian 13 stand-in; fake registers; real `ip`, dnsmasq, sshd, ssh     | Real board files (Type2 and Type1 pass, EmuELEC's is refused), 5 V off before the role switch, gadget and OS descriptors, key-only SSH on a world-writable `/` as on the R36S (a StrictModes sshd refuses the key there; PC Link's takes it), the logs (key fingerprints, USB state with kernel messages and traffic, receive length errors labelled harmless), unplug and replug seen from the PC's 5 V while the USB state stays "configured" as on the R36S, re-enumeration and carrier loss from `usb0`'s carrier, watchdogs (OTG power, network address, dnsmasq, sshd, the stall check, which waits while the cable is out), verified stop and restore, OTG power on safety, failure paths (dwc2 stuck in host mode, OTG power that won't stay off, a killed service and its clean-up), one link at a time, the lock, `pclink.conf` |
+| `tests/device/test_agent.py` (38 tests)                | the same chroot (the 7 button tests run natively, below)                                                      | ES settings on the real `es_settings.cfg`, launch commands against the real `es_systems.cfg` (ES's escaping, defaults and file precedence), ES stopped for a launch and back after it or after a failure, game wrapper as `ark`, quit and `--force`, fb0 PNG, button map against the board file, press length (50 ms while a Tools menu's gptokeyb runs, 120 ms otherwise) and its limits, process names that aren't UTF-8 (as two of the R36S's IRQ threads are)                                                                                                                                                                                                                                                                                                                                                                         |
+| `tests/device/test_menu.sh` (36 checks)                | the same chroot, or the stand-in; a fake `dialog` and `sudo`                                                  | The Tools menu: **Start** says when the link is already on (USB or Wi-Fi) and starts nothing, the OTG questions say whether the port is powered and default to No, a stray Enter answers No or repeats the last item (never **Start**), **OTG power on** is refused while the link runs                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| `run-native-tests.sh` (amd64 and arm64)                | Debian with the kernel's uapi headers; on amd64 also dArkOS's own gptokeyb, built from the commit dArkOS uses | 30 of 30 DRM and evdev ABI values; button injection into a uinput "GO-Super Gamepad" like the R36S's (press, chord, release on interrupt); with gptokeyb and dArkOS's `keys.gptk`, as in a Tools menu: one key per press (A, Down held 600 ms, Select), no key repeat on its keyboard, all shown by `press --trace`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| `tests/test_device_container.py`                       | Docker from Windows                                                                                           | Runs the suites above (the service and menu suites in the dArkOS chroot and in the Debian 13 stand-in) and an end-to-end session: Windows `ssh.exe` and `r36s-remote.py` → dArkOS's sshd (PC Link's config) → the agent                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| `tests/test_r36s_remote.py`, `test_install_pc_link.py` | Windows                                                                                                       | CLI behaviour with a fake SSH layer, `wait`, `stop-link`, `press` (the R36S picks the length unless `--hold-ms` is given; `--trace`), SSH errors explained (a refused key: the device's log and the key's fingerprint), keys never printed, installer dry run, read-back and remove                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 
 The emulator can't exercise USB or the DRM screen buffer; see
 [Device test results](#device-test-results) and

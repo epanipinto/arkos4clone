@@ -147,13 +147,17 @@ has /run/pclink/sshd.log "Failed publickey for ark from 10.36.36.1" "sshd.log: t
 "${SSH[@]}" root@10.36.36.1 true > /tmp/out 2>&1
 check "$?" "255" "root refused"
 
-echo "== T5: the PC connects (UDC configured, DHCP lease)"
+echo "== T5: the PC connects (UDC configured, carrier, DHCP lease)"
 echo "[  100.123456] dwc2 ff300000.usb: new address 12" > $FAKEHW/dmesg
 echo configured > $FAKEHW/sys/class/udc/ff300000.usb/state
+echo 1 > $FAKEHW/sys/class/net/usb0/carrier
+echo 2 > $FAKEHW/sys/class/net/usb0/carrier_changes
 echo "9999999999 02:36:53:00:00:02 10.36.36.13 pc *" > /run/pclink/dnsmasq.leases
 if waitfor 4 is_state connected; then ok "state connected"; else bad "state $(state)"; fi
-has /run/pclink/pclinkd.log "USB: configured; usb0 packets in" "USB state logged with the traffic"
+has /run/pclink/pclinkd.log "USB: configured; usb0 packets in 0, out 0 (errors 0/0, dropped 0/0)" "USB state logged with the traffic"
 has /run/pclink/pclinkd.log "; kernel: dwc2 ff300000.usb: new address 12" "and the kernel's latest USB news"
+sleep 1.5
+hasnot /run/pclink/pclinkd.log "carrier changes" "the link's first carrier comes with the connection: not logged again"
 $D status > /tmp/out 2>&1
 has /tmp/out "service=active" "service active"
 has /tmp/out "pc=10.36.36.13" "PC address from the lease"
@@ -194,6 +198,47 @@ if waitfor 5 alive /run/pclink/dnsmasq.pid; then ok "dnsmasq running again"; els
 kill "$(cat /run/pclink/sshd.pid)"
 if waitfor 5 grep -q "sshd stopped (its log:" /run/pclink/pclinkd.log; then ok "sshd: logged"; else bad "sshd: not logged"; fi
 if waitfor 5 port_open 10.36.36.1 2222; then ok "sshd listening again"; else bad "sshd not restarted"; fi
+
+echo "== T5e: the cable comes out and goes back in, the UDC still saying configured (as on the R36S): seen from the 5 V"
+echo 0 > $FAKEHW/cable
+if waitfor 4 is_state ready; then ok "cable out: waiting for the PC"; else bad "state $(state)"; fi
+has /run/pclink/status "message=Waiting for the PC (cable unplugged?)." "says so"
+has /run/pclink/pclinkd.log "USB: the PC's 5 V went away (cable unplugged?); usb0 packets in" "logged, with the traffic"
+check "$(cat $FAKEHW/sys/class/udc/ff300000.usb/state)" "configured" "(the UDC state didn't change)"
+echo 1 > $FAKEHW/cable
+if waitfor 4 is_state connected; then ok "cable back: connected"; else bad "state $(state)"; fi
+has /run/pclink/status "message=Connected to the PC." "says so"
+has /run/pclink/pclinkd.log "USB: the PC's 5 V came in" "logged"
+
+echo "== T5f: the PC re-enumerates the R36S (usb0's carrier drops and comes back): logged with the kernel's messages"
+printf '[  300.000001] dwc2 ff300000.usb: new device is high-speed\n[  300.500002] dwc2 ff300000.usb: new address 35\n' >> $FAKEHW/dmesg
+echo 4 > $FAKEHW/sys/class/net/usb0/carrier_changes
+if waitfor 4 grep -q "USB: the PC re-enumerated the R36S (usb0 carrier changes 2 -> 4); usb0 packets in" /run/pclink/pclinkd.log; then
+  ok "down and up between two looks: logged"
+else
+  bad "not logged"
+fi
+has /run/pclink/pclinkd.log "; kernel: dwc2 ff300000.usb: new device is high-speed|dwc2 ff300000.usb: new address 35" "with the kernel's messages"
+echo 0 > $FAKEHW/sys/class/net/usb0/carrier
+echo 5 > $FAKEHW/sys/class/net/usb0/carrier_changes
+if waitfor 4 grep -q "USB: usb0 lost its carrier (carrier changes 4 -> 5)" /run/pclink/pclinkd.log; then ok "carrier lost: logged"; else bad "not logged"; fi
+echo 1 > $FAKEHW/sys/class/net/usb0/carrier
+echo 6 > $FAKEHW/sys/class/net/usb0/carrier_changes
+if waitfor 4 grep -q "USB: the PC re-enumerated the R36S (usb0 carrier changes 5 -> 6)" /run/pclink/pclinkd.log; then ok "carrier back: logged"; else bad "not logged"; fi
+check "$(state)" "connected" "still connected: the PC's 5 V never went"
+
+echo "== T5g: traffic: the receive errors this kernel's RNDIS code makes are labelled harmless"
+S=$FAKEHW/sys/class/net/usb0/statistics
+echo 2255 > $S/rx_packets
+echo 2409 > $S/tx_packets
+echo 2215 > $S/rx_errors
+echo 2215 > $S/rx_length_errors
+echo 10 > $S/rx_dropped
+$D diag > /tmp/out 2>&1
+has /tmp/out "usb0 packets in 2255, out 2409 (errors 2215/0, all harmless length errors, dropped 10/0)" "all length errors"
+echo 2220 > $S/rx_errors
+$D diag > /tmp/out 2>&1
+has /tmp/out "usb0 packets in 2255, out 2409 (errors 2220/0, 2215 of them harmless length errors, dropped 10/0)" "other errors too"
 
 echo "== T6: something switches OTG power back on: off again within 2 s"
 echo $(($(reg 0xff270000) | 16)) > $FAKEHW/regs/0xff270000
@@ -408,13 +453,20 @@ check "$(bit 0xff270000 4)" "1" "then OTG power on"
 rm -f $FAKEHW/state-pclink
 stop_all
 
-echo "== T20: the PC stops answering while USB says configured: logged"
+echo "== T20: the PC stops answering while USB says configured: logged, but not while the PC's 5 V is gone"
 . $W/tests/device/fakehw.sh
 reset_card
 PCLINK_PROBE_SECS=1 $D start usb > /dev/null 2>&1
 echo "9999999999 02:36:53:00:00:02 10.36.36.13 pc *" > /run/pclink/dnsmasq.leases
+echo 1 > $FAKEHW/cable
 echo configured > $FAKEHW/sys/class/udc/ff300000.usb/state
-if waitfor 30 grep -q "the PC stopped answering over USB, though USB says configured" /run/pclink/pclinkd.log; then ok "logged (this usb0 can't answer ARP)"; else bad "not logged"; fi
+waitfor 4 is_state connected
+echo 0 > $FAKEHW/cable
+if waitfor 4 is_state ready; then ok "cable out"; else bad "state $(state)"; fi
+sleep 10
+hasnot /run/pclink/pclinkd.log "the PC stopped answering" "no stall reported while the cable is out"
+echo 1 > $FAKEHW/cable
+if waitfor 30 grep -q "the PC stopped answering over USB, though USB says configured" /run/pclink/pclinkd.log; then ok "cable back: logged (this usb0 can't answer ARP)"; else bad "not logged"; fi
 if waitfor 5 grep -q "warning=The PC stopped answering at" /run/pclink/status; then ok "status warning for the menu"; else bad "no status warning: $(cat /run/pclink/status)"; fi
 stop_all
 
