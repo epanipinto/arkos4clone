@@ -1,0 +1,39 @@
+odroidgoa-uboot-config
+
+# R36S-USB-CARD-MODE: boot.ini for ONE boot into USB card mode (dArkOS: Options > Tools > USB Card Mode).
+# The tool writes this first part plus the current dArkOS boot.ini (boot.ini.darkos) as boot.ini. EmuELEC's
+# kernel then runs post-flash.sh, which copies boot.ini.darkos back over boot.ini before it shares the cards,
+# so the next power-on starts dArkOS. If the R36S ever stays on a black screen, see USB-CARD-MODE-RECOVERY.txt.
+# Card mode: EmuELEC 4.7's kernel (initramfs built in) and the card-mode board file (USB peripheral) from
+# usbmode/. Both are MD5-checked in memory before booti, because a failed booti on this U-Boot stops at its
+# booting-fail screen instead of returning. If a file is missing or different, the dArkOS boot below runs.
+# Same addresses as U-Boot's own bootcmd: kernel at 0x02000000 (0x1440000 bytes with BSS), board file at
+# 0x01f00000 (0x1a1b5 bytes). Literal addresses keep console_detect reading the dtb_loadaddr line below.
+setenv bootargs "boot=UUID=F162-CB2C quiet console=ttyFIQ0 console=tty0 fbcon=rotate:3 consoleblank=0"
+if load mmc 1:1 0x02000000 usbmode/KERNEL; then if md5sum -v 0x02000000 13b4808 a0e4b524c41147f7abef3f274d7d9981; then if load mmc 1:1 0x01f00000 usbmode/rk3326-evb-lp3-v12-linux.dtb; then if md5sum -v 0x01f00000 1a1b5 299f8434c357fcc474e1873e80b56247; then booti 0x02000000 - 0x01f00000; fi; fi; fi; fi
+
+# R36S-USB-CARD-MODE-FALLBACK: the normal dArkOS boot follows (boot.ini.darkos without its first line).
+
+########################################################################
+# Changes made to this are overwritten every time there's a new upgrade
+# To make your changes permanent change it on 
+# boot.ini.default
+# After changing it on boot.ini.default run the bootini command to
+# rewrite this file with your personal permanent settings.
+########################################################################        
+
+# Boot Arguments
+setenv bootargs "root=/dev/mmcblk0p2 rootwait rw fsck.repair=yes net.ifnames=0 fbcon=rotate:0 console=/dev/ttyFIQ0 quiet splash plymouth.ignore-serial-consoles consoleblank=0 max_cpufreq=1296 boot_cpufreq=1248 max_gpufreq=520 max_ddrfreq=666"
+
+# Booting
+setenv loadaddr "0x02000000"
+setenv initrd_loadaddr "0x01100000"
+setenv dtb_loadaddr "0x01f00000"
+
+load mmc 1:1 ${loadaddr} Image
+load mmc 1:1 ${initrd_loadaddr} uInitrd
+
+load mmc 1:1 ${dtb_loadaddr} rk3326-r36s-type2-panel1-with-amp-linux.dtb
+
+booti ${loadaddr} ${initrd_loadaddr} ${dtb_loadaddr}
+
