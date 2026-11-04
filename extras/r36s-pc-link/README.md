@@ -9,9 +9,9 @@ and a shell. The link uses the OTG USB cable, or Wi-Fi with a dongle.
 - **The R36S never powers the cable.** It switches its OTG 5 V off before it
   asks for the PC, and keeps it off until you turn it back on or restart.
 - **Status: experimental.** Tested on an R36S clone ("clone type2 panel1 amp",
-  dArkOS4Clone 20261008) on 2026-11-03; see
-  [Device test results](#device-test-results). Known bug: a press of the default
-  120 ms can register twice in PC Link's own dialog menus.
+  dArkOS4Clone 20261008) on 11/3 and 11/4; see
+  [Device test results](#device-test-results). Stopping the link and **OTG power
+  on** afterwards haven't been tested on the device yet.
 - **Device:** RK3326 boards laid out like the R36S clone: `pclinkd.sh check`
   reads the board file at runtime and refuses anything else (the OTG port must
   be `otg`, its 5 V `vbus_host` on GPIO3_A4, the PHY's OTG port disabled).
@@ -87,7 +87,10 @@ alone. One link runs at a time: stop the Wi-Fi link before starting the USB one.
 - **Screenshots:** read the DRM framebuffer on screen (EmulationStation, games,
   menus), with `/dev/fb0` as the fallback.
 - **Buttons:** written into the built-in pad's own input device, "GO-Super
-  Gamepad", so they count as player 1's presses.
+  Gamepad", so they count as player 1's presses. A press lasts 50 ms while a
+  Tools menu is up (its gptokeyb turns the pad into key presses) and 120 ms in
+  ES and games, so that a game that reads the pad only every few frames still
+  sees it.
 - **Settings:** stop ES, back up and edit `es_settings.cfg`, then start ES
   again.
 - **Games:** launch with ES's own command, emulator and core, and quit with
@@ -209,34 +212,43 @@ on the R36S. It shows the link right now, PC Link's log and the SSH server's log
 
 ### Commands
 
-| Command                                 | What it does                                                                 |
-| --------------------------------------- | ---------------------------------------------------------------------------- |
-| `setup-key`                             | Makes this PC's key; prints its fingerprint                                  |
-| `wait`                                  | Waits for the USB network, then for SSH with the key                         |
-| `status`                                | Link, OTG power, ES, the running game, display, battery                      |
-| `screenshot [file]`                     | Saves the screen as a PNG (`--open` shows it)                                |
-| `press b1 b2+b3 ...`                    | Presses buttons in order; `+` presses them together                          |
-| `hold b --ms N`, `release-all`          | Holds a button for a while; releases everything                              |
-| `buttons`                               | Names: up down left right a b x y l1 r1 l2 r2 select start l3 r3 fn          |
-| `launch <rom> [--dry-run]`              | Starts a game like ES would (`--system`, `--emulator`, `--core` to override) |
-| `quit-game [--force]`                   | Quits the game (SIGTERM; `--force` kills it after 10 s); ES comes back       |
-| `es list`, `es get`, `es set`           | Reads or changes `es_settings.cfg`; `set` restarts ES and keeps a backup     |
-| `es restart`                            | Restarts ES                                                                  |
-| `logs es\|game\|pclink\|journal\|dmesg` | The end of a log                                                             |
-| `run "<cmd>" [--root]`, `shell`         | A command or shell as `ark` (`--root`: with sudo)                            |
-| `stop-link`, `forget-host`              | Stops the link from the PC; forgets the pinned host key after a re-flash     |
+| Command                                 | What it does                                                                                     |
+| --------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| `setup-key`                             | Makes this PC's key; prints its fingerprint                                                      |
+| `wait`                                  | Waits for the USB network, then for SSH with the key                                             |
+| `status`                                | Link, OTG power, ES, the running game, display, battery                                          |
+| `screenshot [file]`                     | Saves the screen as a PNG (`--open` shows it)                                                    |
+| `press b1 b2+b3 ...`                    | Presses buttons in order; `+` presses them together; `--trace` shows every key event it sets off |
+| `hold b --ms N`, `release-all`          | Holds a button for a while; releases everything                                                  |
+| `buttons`                               | Names: up down left right a b x y l1 r1 l2 r2 select start l3 r3 fn                              |
+| `launch <rom> [--dry-run]`              | Starts a game like ES would (`--system`, `--emulator`, `--core` to override)                     |
+| `quit-game [--force]`                   | Quits the game (SIGTERM; `--force` kills it after 10 s); ES comes back                           |
+| `es list`, `es get`, `es set`           | Reads or changes `es_settings.cfg`; `set` restarts ES and keeps a backup                         |
+| `es restart`                            | Restarts ES                                                                                      |
+| `logs es\|game\|pclink\|journal\|dmesg` | The end of a log                                                                                 |
+| `run "<cmd>" [--root]`, `shell`         | A command or shell as `ark` (`--root`: with sudo)                                                |
+| `stop-link`, `forget-host`              | Stops the link from the PC; forgets the pinned host key after a re-flash                         |
 
 - **No game in the way:** settings and launches refuse while a game runs, unless
   you add `--force`, which stops it without saving.
 - **Not in ES's history:** games started with `launch` run outside ES, so they
   don't appear in ES's last-played list.
+- **Press length:** 50 ms while a Tools menu is up, 120 ms otherwise;
+  `--hold-ms` sets it. `press --trace` lists, for the pad and every keyboard
+  with an Enter key (the menu's gptokeyb among them), each key event the press
+  set off and whether the kernel repeats that device's keys. Use it when a press
+  seems to count twice.
+
+**The PC Link menu** comes back on the item you last used, so a stray press
+repeats that and never picks another item. **Start** says so when the link is
+already on, and the questions about the OTG port default to **No**.
 
 ## Device test results
 
 On an R36S clone ("clone type2 panel1 amp", dArkOS4Clone 20261008, kernel
-4.4.189), 2026-11-03, over USB to a Windows laptop:
+4.4.189), over USB to a Windows laptop:
 
-- **Passed:**
+- **Passed on 11/3:**
   - the link: dwc2 took the device role, Windows bound RNDIS by itself, and the
     PC got its address by DHCP;
   - SSH with PC Link's own sshd;
@@ -246,10 +258,15 @@ On an R36S clone ("clone type2 panel1 amp", dArkOS4Clone 20261008, kernel
   - `launch` and `quit-game`;
   - `es set`;
   - 7 minutes connected without a stall.
-- **Known bug:** a press of the default 120 ms can register twice in PC Link's
-  own dialog menus on the R36S.
-- **Not yet tested:** stopping the link with the cable in, and **OTG power on**
-  afterwards (the 5 V interlock).
+- **11/4, presses in the PC Link menu:** on 11/3 a 120 ms `press a` seemed to
+  count twice there. On 11/4 five traced presses (A and Down, 120 ms) each gave
+  one key (see [Double presses](#risks-and-unknowns)). Presses in Tools menus
+  are now 50 ms, and the menu changes above (**Start** while on, No by default,
+  the last item kept) went onto the R36S the same night without stopping the
+  link (00:35 to 01:10), checked against these files by SHA-256.
+- **Not yet tested:** step 10 of the [first device test](#first-device-test):
+  stopping the link with the cable in, and **OTG power on** afterwards (the 5 V
+  interlock).
 
 ## First device test
 
@@ -316,6 +333,8 @@ the PC Link menu.
      `screenshot --source fb0` and `status` (the Display line) show.
 7. **Buttons.** Run `press down` and `press a` in ES, then `press start` in a
    game. Check that the real buttons still work afterwards.
+   - In the PC Link menu, `press down` must move one item. If a press counts
+     twice, run it again with `--trace` and keep the output.
    - **If a button seems stuck:** run `release-all`.
 8. **Games.** Compare `launch <rom> --dry-run` with what ES runs (`logs es` or
    the R36S settings notes). Then launch for real, and run `quit-game`. ES
@@ -342,9 +361,18 @@ Device Manager.
 - **The role switch.** dwc2 followed the forced ID on the device, and Windows
   bound RNDIS by itself.
 - **Link stalls.** In an earlier test the R36S stopped answering within minutes
-  while Windows still showed the adapter as up; the last test ran 7 minutes
+  while Windows still showed the adapter as up; on 11/3 the link ran 7 minutes
   without one. PC Link logs the likely causes: the USB state, the network
   address, an ARP check of the PC, and how the service ended.
+  - On 11/4, after an hour up, `usb0` counted about 99% of the packets it
+    received as errors (2917 of 2957) while SSH worked normally. **Show the
+    log** shows the count; worth watching next to any stall.
+- **Double presses.** On 11/3 a 120 ms `press a` seemed to count twice in the PC
+  Link menu. On 11/4 it didn't happen in five traced tries (A and Down at 120
+  ms): each press gave one key from the menu's gptokeyb, whose keyboard has no
+  kernel key repeat. Presses in Tools menus are now 50 ms and the menu shrugs
+  off a stray press; if one shows up again, `press --trace` shows where it comes
+  from.
 - **5 V detection.** With the PHY's OTG port unmanaged, does the status bit
   really show a PC's 5 V? **OTG power on** stays refused until PC Link has seen
   it do so, and the start's "5 V was already coming in" warning depends on it.
@@ -403,9 +431,9 @@ Device Manager.
 
 Everything below runs off the device, against the dArkOS4Clone image (read only,
 through an overlay). Set `R36S_IMAGE` to the image file (for example
-`D:\dArkOS4Clone-20261008.img`). Without it, the service suite runs in a Debian
-13 stand-in (the same OpenSSH, dnsmasq and sudo, and the same `ark` user), and
-the suites that need dArkOS's files are skipped. Run it all with:
+`D:\dArkOS4Clone-20261008.img`). Without it, the service and menu suites run in
+a Debian 13 stand-in (the same OpenSSH, dnsmasq and sudo, and the same `ark`
+user), and the suites that need dArkOS's files are skipped. Run it all with:
 
 ```powershell
 uv run --no-project --with pytest --with typer pytest tests -v
@@ -413,18 +441,21 @@ uv run --no-project --with pytest --with typer pytest tests -v
 
 The board-file fixtures are copies of this repository's
 `boot/dArkOS/consoles/clone type2 panel1 amp` and `clone type1 panel5` board
-files. The negative case, EmuELEC's card-mode board file, isn't in the
-repository: copy the one USB card mode's installer makes to
+files; `darkos-keys.gptk` and `darkos-go-super-gamecontrollerdb.txt` are
+dArkOS's `/opt/inttools/keys.gptk` and the built-in pad's line from its
+`gamecontrollerdb.txt`. The negative case, EmuELEC's card-mode board file, isn't
+in the repository: copy the one USB card mode's installer makes to
 `tests/device/fixtures/emuelec-card-mode.dtb` to run it; without it those checks
 are skipped.
 
-| Suite                                                  | Where                                                                                                     | Covers                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
-| ------------------------------------------------------ | --------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `tests/device/test_pclinkd.sh` (177 checks)            | arm64 chroot of dArkOS's rootfs, or the Debian 13 stand-in; fake registers; real `ip`, dnsmasq, sshd, ssh | Real board files (Type2 and Type1 pass, EmuELEC's is refused), 5 V off before the role switch, gadget and OS descriptors, key-only SSH on a world-writable `/` as on the R36S (a StrictModes sshd refuses the key there; PC Link's takes it), the logs (key fingerprints, USB state with kernel messages and traffic), watchdogs (OTG power, network address, dnsmasq, sshd, the stall check), verified stop and restore, OTG power on safety, failure paths (dwc2 stuck in host mode, OTG power that won't stay off, a killed service and its clean-up), one link at a time, the lock, `pclink.conf` |
-| `tests/device/test_agent.py` (27 tests)                | the same chroot                                                                                           | ES settings on the real `es_settings.cfg`, launch commands against the real `es_systems.cfg` (ES's escaping, defaults and file precedence), ES stopped for a launch and back after it or after a failure, game wrapper as `ark`, quit and `--force`, fb0 PNG, button map against the board file                                                                                                                                                                                                                                                                                                       |
-| `run-native-tests.sh` (amd64 and arm64)                | Debian with the kernel's uapi headers                                                                     | 29 of 29 DRM and evdev ABI values; button injection into a real uinput "GO-Super Gamepad" (press, chord, release on interrupt)                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
-| `tests/test_device_container.py`                       | Docker from Windows                                                                                       | Runs the suites above (the service suite in the dArkOS chroot and in the Debian 13 stand-in) and an end-to-end session: Windows `ssh.exe` and `r36s-remote.py` → dArkOS's sshd (PC Link's config) → the agent                                                                                                                                                                                                                                                                                                                                                                                         |
-| `tests/test_r36s_remote.py`, `test_install_pc_link.py` | Windows                                                                                                   | CLI behaviour with a fake SSH layer, `wait`, `stop-link`, SSH errors explained (a refused key: the device's log and the key's fingerprint), keys never printed, installer dry run, read-back and remove                                                                                                                                                                                                                                                                                                                                                                                               |
+| Suite                                                  | Where                                                                                                         | Covers                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| ------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `tests/device/test_pclinkd.sh` (177 checks)            | arm64 chroot of dArkOS's rootfs, or the Debian 13 stand-in; fake registers; real `ip`, dnsmasq, sshd, ssh     | Real board files (Type2 and Type1 pass, EmuELEC's is refused), 5 V off before the role switch, gadget and OS descriptors, key-only SSH on a world-writable `/` as on the R36S (a StrictModes sshd refuses the key there; PC Link's takes it), the logs (key fingerprints, USB state with kernel messages and traffic), watchdogs (OTG power, network address, dnsmasq, sshd, the stall check), verified stop and restore, OTG power on safety, failure paths (dwc2 stuck in host mode, OTG power that won't stay off, a killed service and its clean-up), one link at a time, the lock, `pclink.conf` |
+| `tests/device/test_agent.py` (38 tests)                | the same chroot (the 7 button tests run natively, below)                                                      | ES settings on the real `es_settings.cfg`, launch commands against the real `es_systems.cfg` (ES's escaping, defaults and file precedence), ES stopped for a launch and back after it or after a failure, game wrapper as `ark`, quit and `--force`, fb0 PNG, button map against the board file, press length (50 ms while a Tools menu's gptokeyb runs, 120 ms otherwise) and its limits, process names that aren't UTF-8 (as two of the R36S's IRQ threads are)                                                                                                                                     |
+| `tests/device/test_menu.sh` (36 checks)                | the same chroot, or the stand-in; a fake `dialog` and `sudo`                                                  | The Tools menu: **Start** says when the link is already on (USB or Wi-Fi) and starts nothing, the OTG questions say whether the port is powered and default to No, a stray Enter answers No or repeats the last item (never **Start**), **OTG power on** is refused while the link runs                                                                                                                                                                                                                                                                                                               |
+| `run-native-tests.sh` (amd64 and arm64)                | Debian with the kernel's uapi headers; on amd64 also dArkOS's own gptokeyb, built from the commit dArkOS uses | 30 of 30 DRM and evdev ABI values; button injection into a uinput "GO-Super Gamepad" like the R36S's (press, chord, release on interrupt); with gptokeyb and dArkOS's `keys.gptk`, as in a Tools menu: one key per press (A, Down held 600 ms, Select), no key repeat on its keyboard, all shown by `press --trace`                                                                                                                                                                                                                                                                                   |
+| `tests/test_device_container.py`                       | Docker from Windows                                                                                           | Runs the suites above (the service and menu suites in the dArkOS chroot and in the Debian 13 stand-in) and an end-to-end session: Windows `ssh.exe` and `r36s-remote.py` → dArkOS's sshd (PC Link's config) → the agent                                                                                                                                                                                                                                                                                                                                                                               |
+| `tests/test_r36s_remote.py`, `test_install_pc_link.py` | Windows                                                                                                       | CLI behaviour with a fake SSH layer, `wait`, `stop-link`, `press` (the R36S picks the length unless `--hold-ms` is given; `--trace`), SSH errors explained (a refused key: the device's log and the key's fingerprint), keys never printed, installer dry run, read-back and remove                                                                                                                                                                                                                                                                                                                   |
 
 The emulator can't exercise USB or the DRM screen buffer; see
 [Device test results](#device-test-results) and

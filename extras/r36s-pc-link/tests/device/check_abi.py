@@ -23,6 +23,7 @@ assumed = {
     "DRM_IOCTL_MODE_GETFB": agent.DRM_IOCTL_MODE_GETFB,
     "DRM_IOCTL_MODE_MAP_DUMB": agent.DRM_IOCTL_MODE_MAP_DUMB,
     "EVIOCGBIT_KEY": agent.EVIOCGBIT_KEY,
+    "EVIOCGREP": agent.EVIOCGREP,
     "input_event_size": len(agent.event(1, 2, 3)),
     "card_res_size": struct.calcsize("<QQQQ8I"),
     "card_res_crtc_id_ptr": 8,

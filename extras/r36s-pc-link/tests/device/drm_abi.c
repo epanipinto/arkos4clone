@@ -20,6 +20,7 @@ int main(void)
 	printf(" \"DRM_IOCTL_MODE_GETFB\": %lu,\n", (unsigned long)DRM_IOCTL_MODE_GETFB);
 	printf(" \"DRM_IOCTL_MODE_MAP_DUMB\": %lu,\n", (unsigned long)DRM_IOCTL_MODE_MAP_DUMB);
 	printf(" \"EVIOCGBIT_KEY\": %lu,\n", (unsigned long)EVIOCGBIT(EV_KEY, 96));
+	printf(" \"EVIOCGREP\": %lu,\n", (unsigned long)EVIOCGREP);
 	printf(" \"input_event_size\": %lu,\n", SIZE(struct input_event));
 	printf(" \"card_res_size\": %lu, \"card_res_crtc_id_ptr\": %lu, \"card_res_count_crtcs\": %lu,\n", SIZE(struct drm_mode_card_res),
 	       OFF(struct drm_mode_card_res, crtc_id_ptr), OFF(struct drm_mode_card_res, count_crtcs));

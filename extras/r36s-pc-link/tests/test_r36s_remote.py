@@ -74,12 +74,37 @@ def test_buttons_are_checked_before_connecting(remote, fake_ssh):
 
 def test_press_passes_timing_and_prints_result(remote, fake_ssh):
     calls, answers = fake_ssh
-    answers.append((0, json.dumps({"pressed": ["a", "b+start"]}), ""))
+    answers.append((0, json.dumps({"pressed": ["a", "b+start"], "hold_ms": 80, "hold_why": "as asked"}), ""))
     result = runner.invoke(remote.app, ["press", "a", "b+start", "--hold-ms", "80"])
     assert result.exit_code == 0, result.output
-    assert "Pressed: a b+start" in result.output
+    assert "Pressed: a b+start (80 ms: as asked)" in result.output
     _, argv, root = calls[0]
     assert root and argv[1:] == [remote.AGENT, "press", "a", "b+start", "--hold-ms", "80", "--gap-ms", "250"]
+    assert runner.invoke(remote.app, ["press", "a", "--hold-ms", "0"]).exit_code == 2  # out of range: refused here
+    assert len(calls) == 1
+
+
+def test_press_lets_the_r36s_choose_the_hold_and_traces(remote, fake_ssh):
+    calls, answers = fake_ssh
+    trace = [
+        {
+            "device": "GO-Super Gamepad",
+            "node": "/dev/input/event2",
+            "repeat_ms": None,
+            "events": [{"t_ms": 0, "key": "a", "code": 305, "value": "down"}, {"t_ms": 50, "key": "a", "code": 305, "value": "up"}],
+        },
+        {"device": "Fake Keyboard", "node": "/dev/input/event5", "repeat_ms": [250, 33], "events": [{"t_ms": 2, "key": "Enter", "code": 28, "value": "down"}]},
+        {"device": "rk817_pwrkey", "node": "/dev/input/event1", "repeat_ms": None, "events": []},
+    ]
+    answers.append((0, json.dumps({"pressed": ["a"], "hold_ms": 50, "hold_why": "a Tools menu is up (gptokeyb)", "trace": trace}), ""))
+    result = runner.invoke(remote.app, ["press", "a", "--trace"])
+    assert result.exit_code == 0, result.output
+    _, argv, _ = calls[0]
+    assert argv[1:] == [remote.AGENT, "press", "a", "--gap-ms", "250", "--trace"]  # no hold: the R36S picks it
+    assert "Pressed: a (50 ms: a Tools menu is up (gptokeyb))" in result.output
+    assert "GO-Super Gamepad (/dev/input/event2, no kernel key repeat): +0 ms a down, +50 ms a up" in result.output
+    assert "Fake Keyboard (/dev/input/event5, kernel key repeat after 250 ms): +2 ms Enter down" in result.output
+    assert "rk817_pwrkey (/dev/input/event1, no kernel key repeat): nothing" in result.output
 
 
 def test_screenshot_writes_png(remote, fake_ssh, tmp_path):

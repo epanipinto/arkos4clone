@@ -54,6 +54,23 @@ def png_pixels(data: bytes) -> tuple[int, int, bytes]:
     return width, height, b"".join(rows)
 
 
+def device_node(name: str, wait: float = 5.0) -> Path:
+    """The /dev/input node of the input device called name, made if missing (no udev in these containers)."""
+    deadline = time.monotonic() + wait
+    while True:
+        for ev in sorted(Path("/sys/class/input").glob("event*")):
+            if (ev / "device/name").read_text().strip() == name:
+                node = Path("/dev/input", ev.name)
+                if not node.exists():
+                    node.parent.mkdir(exist_ok=True)
+                    major, minor = map(int, (ev / "dev").read_text().split(":"))
+                    os.mknod(node, 0o20660, os.makedev(major, minor))
+                return node
+        if time.monotonic() > deadline:
+            raise AssertionError(f"no input device {name!r}")
+        time.sleep(0.1)
+
+
 def fake_es_with_game() -> subprocess.Popen:
     """A stand-in for emulationstation.sh in the middle of a game: the systemctl mock reports it as ES's MainPID,
     and its child (sleep) is the game."""
@@ -371,20 +388,16 @@ class Buttons(unittest.TestCase):
         import evdev
 
         cls.evdev = evdev
-        caps = {evdev.ecodes.EV_KEY: sorted(agent.BUTTONS.values())}
+        e = evdev.ecodes
+        # The R36S pad's sticks (board file: scale 2, fuzz 32, flat 32). SDL, and so gptokeyb, takes a device for a
+        # joystick only if it has ABS_X and ABS_Y.
+        stick = evdev.AbsInfo(value=0, min=-1800, max=1800, fuzz=32, flat=32, resolution=0)
+        caps = {e.EV_KEY: sorted(agent.BUTTONS.values()), e.EV_ABS: [(c, stick) for c in (e.ABS_X, e.ABS_Y, e.ABS_RX, e.ABS_RY)]}
         try:
             cls.ui = evdev.UInput(caps, name="GO-Super Gamepad", vendor=0x484B, product=0x1100, version=0x100, bustype=0x19)
         except OSError as e:
             raise unittest.SkipTest(f"no uinput here ({e}); qemu-user can't pass uinput ioctls: run-native-tests.sh --buttons runs these natively") from e
-        time.sleep(0.5)
-        for ev in Path("/sys/class/input").glob("event*"):
-            if (ev / "device/name").read_text().strip() == "GO-Super Gamepad":
-                node = Path("/dev/input", ev.name)
-                if not node.exists():
-                    node.parent.mkdir(exist_ok=True)
-                    major, minor = map(int, (ev / "dev").read_text().split(":"))
-                    os.mknod(node, 0o20660, os.makedev(major, minor))
-                cls.node = node
+        cls.node = device_node("GO-Super Gamepad")
         cls.reader = evdev.InputDevice(str(cls.node))
 
     @classmethod
@@ -438,6 +451,57 @@ class Buttons(unittest.TestCase):
         self.assertEqual(bad.returncode, 1)
         self.assertIn("unknown button", bad.stderr)
 
+    # dArkOS's own gptokeyb (christianhaitian/gptokeyb, branch inttools, built into the amd64 tools image), with
+    # dArkOS's /opt/inttools/keys.gptk and the pad's line from its gamecontrollerdb.txt (tests/device/fixtures)
+    GPTOKEYB = Path("/opt/inttools/gptokeyb")
+
+    def start_gptokeyb(self) -> None:
+        if not self.GPTOKEYB.is_file():
+            self.skipTest("no gptokeyb here (the amd64 tools image builds dArkOS's)")
+        keys = Path("/tmp/keys.gptk")  # gptokeyb opens its config read-write
+        keys.write_bytes((W / "tests/device/fixtures/darkos-keys.gptk").read_bytes())
+        env = dict(os.environ, SDL_GAMECONTROLLERCONFIG_FILE=str(W / "tests/device/fixtures/darkos-go-super-gamecontrollerdb.txt"), SDL_JOYSTICK_DISABLE_UDEV="1")
+        proc = subprocess.Popen([str(self.GPTOKEYB), "-1", "PC Link.sh", "-c", str(keys)], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+        def stop():
+            proc.terminate()
+            proc.wait(15)
+
+        self.addCleanup(stop)
+        device_node("Fake Keyboard")
+        time.sleep(2)  # SDL opens the pad as a game controller
+
+    def press_traced(self, *args: str) -> dict:
+        result = run_agent("press", *args, "--trace")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return json.loads(result.stdout)
+
+    @staticmethod
+    def keys(data: dict, device: str) -> list[tuple[str, str]]:
+        return [(e["key"], e["value"]) for d in data["trace"] if d["device"] == device for e in d["events"]]
+
+    def test_a_tools_menu_gets_one_key_per_press(self):
+        self.start_gptokeyb()
+        data = self.press_traced("a")
+        self.assertEqual((data["hold_ms"], data["hold_why"]), (50, "a Tools menu is up (gptokeyb)"))
+        self.assertEqual(self.keys(data, "GO-Super Gamepad"), [("a", "down"), ("a", "up")])
+        self.assertEqual(self.keys(data, "Fake Keyboard"), [("Enter", "down"), ("Enter", "up")])
+        fake = next(d for d in data["trace"] if d["device"] == "Fake Keyboard")
+        self.assertIsNone(fake["repeat_ms"])  # no kernel key repeat on gptokeyb's keyboard
+        held = {e["value"]: e["t_ms"] for e in fake["events"]}
+        self.assertTrue(40 <= held["up"] - held["down"] <= 100, held)
+        # held a long time, still one key: gptokeyb doesn't repeat
+        data = self.press_traced("down", "--hold-ms", "600")
+        self.assertEqual(self.keys(data, "Fake Keyboard"), [("Down", "down"), ("Down", "up")])
+        data = self.press_traced("select")
+        self.assertEqual(self.keys(data, "Fake Keyboard"), [("Esc", "down"), ("Esc", "up")])
+
+    def test_es_and_games_get_the_longer_press(self):
+        data = self.press_traced("start")
+        self.assertEqual((data["hold_ms"], data["hold_why"]), (120, "ES or a game"))
+        self.assertEqual(self.keys(data, "GO-Super Gamepad"), [("start", "down"), ("start", "up")])
+        self.assertNotIn("Fake Keyboard", [d["device"] for d in data["trace"]])
+
 
 class Board(unittest.TestCase):
     def test_button_codes_match_the_board_file(self):
@@ -478,6 +542,56 @@ class Board(unittest.TestCase):
                 self.assertEqual(agent.board_ok(), want, name)
             finally:
                 agent.CFG["proc"] = "/proc"
+
+
+class PressTiming(unittest.TestCase):
+    """How long a press lasts when none is asked for, and the /proc reading that decides it."""
+
+    def setUp(self):
+        self.proc = Path("/tmp/fakeproc/pids")
+        shutil.rmtree(self.proc, ignore_errors=True)
+        # pid, name, parent: on the R36S, IRQ threads 118 and 120 are named "irq/42-" and "irq/41-" plus byte 0xC8
+        for pid, comm, ppid in ((1, b"systemd", 0), (118, b"irq/42-\xc8", 2), (500, b"emulationstatio", 1)):
+            d = self.proc / str(pid)
+            d.mkdir(parents=True)
+            (d / "comm").write_bytes(comm + b"\n")
+            (d / "stat").write_bytes(b"%d (%s) S %d 0 0" % (pid, comm, ppid))
+            (d / "cmdline").write_bytes(comm + b"\0")
+        self.saved = dict(agent.CFG)
+        agent.CFG["proc"] = str(self.proc)
+
+    def tearDown(self):
+        agent.CFG.clear()
+        agent.CFG.update(self.saved)
+        shutil.rmtree(self.proc, ignore_errors=True)
+
+    def test_hold_follows_gptokeyb(self):
+        self.assertEqual(agent.default_hold(), (120, "ES or a game"))
+        d = self.proc / "600"
+        d.mkdir()
+        (d / "comm").write_bytes(b"gptokeyb\n")
+        self.assertEqual(agent.default_hold(), (50, "a Tools menu is up (gptokeyb)"))
+
+    def test_process_names_that_are_not_utf8(self):
+        self.assertFalse(agent.menu_up())
+        self.assertEqual(agent.proc_info(118)["comm"], "irq/42-\ufffd")
+        self.assertTrue(agent.pid_alive(118))
+        (FAKEHW / "mainpid-test-unit").write_text("1\n")
+        self.assertEqual(sorted(agent.unit_pids("test-unit")), [1, 500])
+
+    def test_key_capabilities(self):
+        bits = struct.calcsize("l") * 8
+        self.assertTrue(agent.has_code("10000000", 28))  # KEY_ENTER: bit 28 of the last word
+        self.assertFalse(agent.has_code("10000000", 27))
+        self.assertTrue(agent.has_code("1 0", bits))  # the first word holds the higher codes
+        self.assertFalse(agent.has_code("1 0", 28))
+        self.assertFalse(agent.has_code("0", 300))
+
+    def test_press_bounds(self):
+        for args in (("--hold-ms", "0"), ("--hold-ms", "60001"), ("--gap-ms", "-1")):
+            result = run_agent("press", "a", *args)
+            self.assertEqual(result.returncode, 1, args)
+            self.assertIn("--hold-ms takes 1-60000 and --gap-ms 0-60000", result.stderr)
 
 
 class StatusAndLogs(unittest.TestCase):

@@ -7,7 +7,8 @@
 # the r36s-pc-link folder on the PC.
 HERE=$(cd "$(dirname "$0")" && pwd)
 D="$HERE/.pclink/pclinkd.sh"
-TTY=/dev/tty1
+TTY=${PCLINK_TTY:-/dev/tty1}
+GPTOKEYB=${PCLINK_GPTOKEYB:-/opt/inttools/gptokeyb}
 height=17
 width=56
 
@@ -80,9 +81,34 @@ WaitForPc() {
   done
 }
 
+# True (and says so) when the link already runs; refreshes the status first, as the menu may have been open a while.
+AlreadyOn() {
+  local how=
+  refresh
+  [ "$(value service)" = active ] || return 1
+  case $(value mode) in
+    usb) how="the USB cable" ;;
+    wifi) how="Wi-Fi" ;;
+  esac
+  if [ "$1" = wifi ] && [ "$(value mode)" = wifi ]; then
+    say "PC Link is on" "PC Link is already on over Wi-Fi:\n$(value ip), port $(value port).\n\nOn the PC:\n  r36s-remote --host <address> status"
+  elif [ "$1" = "$(value mode)" ]; then
+    say "PC Link is on" "PC Link is already on over $how.\n$(summary | head -n 1)\n\nTo start it again, stop the link first."
+  else
+    say "PC Link is on" "PC Link is on over ${how:-another link}.\n\nStop the link before starting it over $([ "$1" = usb ] && echo the USB cable || echo Wi-Fi)."
+  fi
+}
+
 StartUsb() {
-  local out
-  dialog --title " PC Link over USB " --no-collapse --yesno "Unplug the cable from the OTG port first:\nright now dArkOS powers that port.\n\nThe R36S then switches the port's 5 V off\nand turns it into a USB network device for the PC.\nThe games keep running.\n\nIs the OTG port empty?" $height $width > $TTY || return
+  local out power
+  AlreadyOn usb && return
+  # A stray press must not answer Yes: these questions default to No
+  case $(value otg_power_now) in
+    on) power="Unplug the cable from the OTG port first:\nright now dArkOS powers that port." ;;
+    off) power="The OTG port's 5 V is still off from the last\nPC Link, but unplug the cable from it first:\nPC Link asks for the cable when it's ready." ;;
+    *) power="Unplug the cable from the OTG port first." ;;
+  esac
+  dialog --title " PC Link over USB " --no-collapse --defaultno --yesno "$power\n\nThe R36S then switches the port's 5 V off\nand turns it into a USB network device for the PC.\nThe games keep running.\n\nIs the OTG port empty?" $height $width > $TTY || return
   dialog --infobox "\nStarting PC Link..." 5 $width > $TTY
   out=$(sudo -n /bin/bash "$D" start usb 2>&1) || {
     say "PC Link didn't start" "$(tail -n 9 <<< "$out")"
@@ -93,6 +119,7 @@ StartUsb() {
 
 StartWifi() {
   local out
+  AlreadyOn wifi && return
   dialog --infobox "\nStarting PC Link over Wi-Fi..." 5 $width > $TTY
   out=$(sudo -n /bin/bash "$D" start wifi 2>&1) || {
     say "PC Link didn't start" "$(tail -n 9 <<< "$out")"
@@ -115,7 +142,12 @@ StopLink() {
 
 PowerOn() {
   local out
-  dialog --title " OTG power on " --no-collapse --yesno "Unplug the cable from the OTG port first.\n\nThe R36S then checks that no 5 V comes in on the\nport and powers it again (for a Wi-Fi dongle,\nUSB drive or controller). If it can't check,\nrestart the R36S instead (cable unplugged).\n\nIs the OTG port empty?" $height $width > $TTY || return
+  refresh
+  if [ "$(value service)" = active ]; then
+    say "OTG power" "PC Link is on: stop the link first."
+    return
+  fi
+  dialog --title " OTG power on " --no-collapse --defaultno --yesno "Unplug the cable from the OTG port first.\n\nThe R36S then checks that no 5 V comes in on the\nport and powers it again (for a Wi-Fi dongle,\nUSB drive or controller). If it can't check,\nrestart the R36S instead (cable unplugged).\n\nIs the OTG port empty?" $height $width > $TTY || return
   out=$(sudo -n /bin/bash "$D" vbus-on 2>&1)
   say "OTG power" "$out"
 }
@@ -135,16 +167,18 @@ ShowLog() {
 }
 
 MainMenu() {
-  local choice
+  local choice last=1
   while true; do
     refresh
-    choice=$(dialog --title " R36S PC Link " --no-collapse --cancel-label "Back" --menu "$(summary)" $height $width 6 \
+    # Back on the item just used, so a stray press repeats that, never another item
+    choice=$(dialog --title " R36S PC Link " --no-collapse --cancel-label "Back" --default-item "$last" --menu "$(summary)" $height $width 6 \
       1 "Start over the USB cable" \
       2 "Start over Wi-Fi" \
       3 "Stop the link" \
       4 "OTG power on" \
       5 "Show the log" \
       6 "Back to the games" 2>&1 > $TTY) || ExitMenu
+    last=$choice
     case $choice in
       1) StartUsb ;;
       2) StartWifi ;;
@@ -159,7 +193,7 @@ MainMenu() {
 sudo chmod 666 /dev/uinput
 export SDL_GAMECONTROLLERCONFIG_FILE="/opt/inttools/gamecontrollerdb.txt"
 pgrep -f gptokeyb | sudo xargs -r kill -9
-/opt/inttools/gptokeyb -1 "PC Link.sh" -c "/opt/inttools/keys.gptk" > /dev/null 2>&1 &
+"$GPTOKEYB" -1 "PC Link.sh" -c "/opt/inttools/keys.gptk" > /dev/null 2>&1 &
 trap ExitMenu EXIT
 printf "\033c" > $TTY
 [ -x "$D" ] || [ -f "$D" ] || {

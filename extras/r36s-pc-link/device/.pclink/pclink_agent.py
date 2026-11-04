@@ -70,6 +70,14 @@ BUTTONS = {
     "fn": 0x2C4,
 }
 EV_SYN, EV_KEY = 0x00, 0x01
+# How long a press lasts when none is asked for. Tools menus (dialog scripts) get the pad as key presses from gptokeyb,
+# and there, on the R36S, a 120 ms press registered twice and a 50 ms one once. ES and games read the pad themselves, and
+# a game that looks at it once a frame needs the longer press.
+MENU_HOLD_MS = 50
+GAME_HOLD_MS = 120
+# Keyboard keys a Tools menu gets from gptokeyb (dArkOS's /opt/inttools/keys.gptk), for --trace
+KEY_NAMES = {1: "Esc", 14: "Backspace", 28: "Enter", 57: "Space", 103: "Up", 104: "PageUp", 105: "Left", 106: "Right", 108: "Down", 109: "PageDown"}
+KEY_ENTER = 28
 
 GPIO3_DR = 0xFF270000  # bit 4: GPIO3_A4, dArkOS's vbus_host (OTG 5 V) switch
 GRF_OTG_CON = 0xFF2C0100  # USB2PHY GRF: bit 9 iddig_en, bit 10 iddig_output
@@ -114,6 +122,7 @@ DRM_IOCTL_MODE_GETFB = _ioc(IOC_READ | IOC_WRITE, 0xAD, 28)
 DRM_IOCTL_MODE_MAP_DUMB = _ioc(IOC_READ | IOC_WRITE, 0xB3, 16)
 DRM_CLOEXEC = os.O_CLOEXEC  # drm.h: #define DRM_CLOEXEC O_CLOEXEC (the PRIME export flag)
 EVIOCGBIT_KEY = _ioc(IOC_READ, 0x20 + EV_KEY, 96, "E")
+EVIOCGREP = _ioc(IOC_READ, 0x03, 8, "E")  # the kernel's key repeat delay and period (ms), for devices that repeat
 
 
 def ioctl(fd: int, request: int, buf: bytearray) -> bytearray:
@@ -254,7 +263,7 @@ def cmd_screenshot(args: argparse.Namespace) -> None:
 def find_pad() -> Path:
     for event in sorted(Path(CFG["sys"], "class/input").glob("event*")):
         try:
-            name = (event / "device/name").read_text().strip()
+            name = (event / "device/name").read_bytes().decode(errors="replace").strip()
         except OSError:
             continue
         if name == CFG["pad_name"]:
@@ -321,13 +330,100 @@ def _interrupt(signum, frame):
     raise Interrupted(signum)
 
 
-def press_chords(chords: list[list[str]], hold_ms: int, gap_ms: int) -> list[str]:
+def menu_up() -> bool:
+    """True while gptokeyb runs: a Tools menu (or a port) is up and gets the pad as key presses."""
+    for comm in Path(CFG["proc"]).glob("[0-9]*/comm"):
+        try:
+            if comm.read_bytes().strip() == b"gptokeyb":  # bytes: a process name needn't be UTF-8
+                return True
+        except OSError:
+            continue
+    return False
+
+
+def default_hold() -> tuple[int, str]:
+    if menu_up():
+        return MENU_HOLD_MS, "a Tools menu is up (gptokeyb)"
+    return GAME_HOLD_MS, "ES or a game"
+
+
+def has_code(caps: str, code: int) -> bool:
+    """caps: a sysfs capabilities/key value (hex words, one per kernel long, the most significant first)."""
+    words = caps.split()
+    index, bit = divmod(code, struct.calcsize("l") * 8)
+    return index < len(words) and int(words[-1 - index], 16) >> bit & 1 == 1
+
+
+class Tracer:
+    """The key events, during a press, of every device that could act on it: the pad itself, and each keyboard with
+    an Enter key (gptokeyb's "Fake Keyboard" among them), with the kernel's key repeat setting for each. Read only."""
+
+    def __init__(self) -> None:
+        self.devices: list[dict] = []
+        self.t0 = time.time()
+        for ev in sorted(Path(CFG["sys"], "class/input").glob("event*")):
+            try:
+                name = (ev / "device/name").read_bytes().decode(errors="replace").strip()
+                keys = (ev / "device/capabilities/key").read_text()
+            except (OSError, ValueError):
+                continue
+            if name != CFG["pad_name"] and not has_code(keys, KEY_ENTER):
+                continue
+            node = Path(CFG["dev"], "input", ev.name)
+            try:
+                fd = os.open(node, os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC)
+            except OSError:
+                continue
+            try:
+                repeat = list(struct.unpack("<II", ioctl(fd, EVIOCGREP, bytearray(8))))
+            except OSError:  # no EV_REP: the kernel doesn't repeat this device's keys
+                repeat = None
+            self.devices.append({"device": name, "node": str(node), "repeat_ms": repeat, "events": [], "fd": fd})
+
+    def _read(self, d: dict) -> list[tuple[float, int, int]]:
+        got = []
+        while True:
+            try:
+                data = os.read(d["fd"], 24 * 64)
+            except OSError:  # EAGAIN: nothing more
+                return got
+            if not data:
+                return got
+            for off in range(0, len(data) - 23, 24):
+                sec, usec, kind, code, value = struct.unpack_from("<qqHHi", data, off)
+                if kind == EV_KEY:
+                    got.append((sec + usec / 1e6, code, value))
+
+    def begin(self) -> None:
+        for d in self.devices:
+            self._read(d)  # drop anything from before
+        self.t0 = time.time()
+
+    def finish(self) -> list[dict]:
+        time.sleep(0.4)  # whatever the press sets off, it shows up by then
+        names = {code: name for name, code in BUTTONS.items()} | KEY_NAMES
+        for d in self.devices:
+            d["events"] = [
+                {"t_ms": round((t - self.t0) * 1000), "key": names.get(code, str(code)), "code": code, "value": {0: "up", 1: "down", 2: "repeat"}.get(value, str(value))}
+                for t, code, value in self._read(d)
+            ]
+        return [{k: v for k, v in d.items() if k != "fd"} for d in self.devices]
+
+    def close(self) -> None:
+        for d in self.devices:
+            os.close(d["fd"])
+
+
+def press_chords(chords: list[list[str]], hold_ms: int, gap_ms: int, trace: bool = False) -> tuple[list[str], list[dict] | None]:
     for sig in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT, signal.SIGPIPE):
         signal.signal(sig, _interrupt)
+    tracer = Tracer() if trace else None
     pad = Pad()
     try:
         if missing := sorted({n for chord in chords for n in chord} - pad.supported):
             raise AgentError(f"{pad.path} doesn't report these buttons: {', '.join(missing)}")
+        if tracer:
+            tracer.begin()
         done = []
         for i, chord in enumerate(chords):
             if i:
@@ -337,9 +433,13 @@ def press_chords(chords: list[list[str]], hold_ms: int, gap_ms: int) -> list[str
             time.sleep(hold_ms / 1000)
             pad.release_all([BUTTONS[n] for n in chord])
             done.append("+".join(chord))
-        return done
+        return done, tracer.finish() if tracer else None
     finally:
-        pad.close()
+        try:
+            pad.close()
+        finally:
+            if tracer:
+                tracer.close()
 
 
 def cmd_buttons(args: argparse.Namespace) -> None:
@@ -353,7 +453,14 @@ def cmd_buttons(args: argparse.Namespace) -> None:
 
 
 def cmd_press(args: argparse.Namespace) -> None:
-    out({"pressed": press_chords(parse_chords(args.buttons), args.hold_ms, args.gap_ms)})
+    hold, why = (args.hold_ms, "as asked") if args.hold_ms is not None else default_hold()
+    if not 1 <= hold <= 60000 or not 0 <= args.gap_ms <= 60000:
+        raise AgentError("--hold-ms takes 1-60000 and --gap-ms 0-60000")
+    pressed, trace = press_chords(parse_chords(args.buttons), hold, args.gap_ms, args.trace)
+    result = {"pressed": pressed, "hold_ms": hold, "hold_why": why}
+    if trace is not None:
+        result["trace"] = trace
+    out(result)
 
 
 def cmd_release_all(args: argparse.Namespace) -> None:
@@ -423,7 +530,7 @@ def proc_info(pid: int) -> dict:
     base = Path(CFG["proc"], str(pid))
     try:
         cmdline = (base / "cmdline").read_bytes().replace(b"\0", b" ").decode(errors="replace").strip()
-        comm = (base / "comm").read_text().strip()
+        comm = (base / "comm").read_bytes().decode(errors="replace").strip()
     except OSError:
         return {}
     try:
@@ -444,8 +551,8 @@ def unit_pids(unit: str) -> list[int]:
     children: dict[int, list[int]] = {}
     for stat in Path(CFG["proc"]).glob("[0-9]*/stat"):
         try:
-            text = stat.read_text()
-            ppid = int(text[text.rindex(")") + 2 :].split()[1])
+            text = stat.read_bytes()
+            ppid = int(text[text.rindex(b")") + 2 :].split()[1])
         except (OSError, ValueError, IndexError):
             continue
         children.setdefault(ppid, []).append(int(stat.parent.name))
@@ -753,10 +860,10 @@ def cmd_game_wrapper(args: argparse.Namespace) -> None:
 def pid_alive(pid: int) -> bool:
     """True while pid runs; a zombie (killed, not yet reaped by its parent) counts as gone."""
     try:
-        stat = Path(CFG["proc"], str(pid), "stat").read_text()
+        stat = Path(CFG["proc"], str(pid), "stat").read_bytes()
     except OSError:
         return False
-    return stat[stat.rindex(")") + 2 :][:1] not in ("Z", "X")
+    return stat[stat.rindex(b")") + 2 :][:1] not in (b"Z", b"X")
 
 
 def quit_games(force: bool, timeout: float = 10) -> list[dict]:
@@ -890,8 +997,9 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("buttons").set_defaults(func=cmd_buttons)
     p = sub.add_parser("press")
     p.add_argument("buttons", nargs="+", help="names, or names joined by + to press together (fn+start)")
-    p.add_argument("--hold-ms", type=int, default=120)
+    p.add_argument("--hold-ms", type=int, help=f"default {MENU_HOLD_MS} in a Tools menu (gptokeyb running), else {GAME_HOLD_MS}")
     p.add_argument("--gap-ms", type=int, default=250)
+    p.add_argument("--trace", action="store_true", help="report every key event the press sets off, per input device")
     p.set_defaults(func=cmd_press)
     sub.add_parser("release-all").set_defaults(func=cmd_release_all)
     sub.add_parser("es-list").set_defaults(func=cmd_es_list)

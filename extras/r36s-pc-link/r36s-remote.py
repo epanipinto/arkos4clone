@@ -290,13 +290,20 @@ def buttons(ctx: typer.Context) -> None:
 def press(
     ctx: typer.Context,
     buttons: Annotated[list[str], typer.Argument(help="Buttons in order; a+b presses them together (fn+start)")],
-    hold_ms: Annotated[int, typer.Option(help="How long each press lasts")] = 120,
-    gap_ms: Annotated[int, typer.Option(help="Pause between presses")] = 250,
+    hold_ms: Annotated[int | None, typer.Option(help="How long each press lasts; default 50 ms in a Tools menu, 120 ms in ES or a game", min=1, max=60000)] = None,
+    gap_ms: Annotated[int, typer.Option(help="Pause between presses", min=0, max=60000)] = 250,
+    trace: Annotated[bool, typer.Option("--trace", help="Show every key event the press sets off, per input device")] = False,
 ) -> None:
     """Press buttons on the R36S's own pad (player 1), as if pressed by hand."""
     check_buttons(buttons)
-    pressed = agent_json(ctx, "press", *buttons, "--hold-ms", str(hold_ms), "--gap-ms", str(gap_ms))["pressed"]
-    typer.echo(f"Pressed: {' '.join(pressed)}")
+    args = ["press", *buttons, *(["--hold-ms", str(hold_ms)] if hold_ms is not None else []), "--gap-ms", str(gap_ms), *(["--trace"] if trace else [])]
+    result = agent_json(ctx, *args)
+    held = f" ({result['hold_ms']} ms: {result['hold_why']})" if "hold_ms" in result else ""
+    typer.echo(f"Pressed: {' '.join(result['pressed'])}{held}")
+    for dev in result.get("trace", []):
+        repeat = f"kernel key repeat after {dev['repeat_ms'][0]} ms" if dev.get("repeat_ms") else "no kernel key repeat"
+        events = ", ".join(f"+{e['t_ms']} ms {e['key']} {e['value']}" for e in dev["events"]) or "nothing"
+        typer.echo(f"  {dev['device']} ({dev['node']}, {repeat}): {events}")
 
 
 @app.command()

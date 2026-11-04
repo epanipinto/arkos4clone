@@ -3,6 +3,7 @@
 - pclinkd.sh on fake hardware (tests/device), in an arm64 chroot of the dArkOS4Clone root file system (the image in
   R36S_IMAGE, mounted read-only at /mnt/a4c in the docker-desktop WSL distro, done here if it isn't), and in
   its Debian 13 stand-in (the tools image), which needs no image;
+- the PC Link menu ("PC Link.sh", scripted through a fake dialog) in both;
 - pclink_agent.py in that chroot;
 - the kernel ABI check and the button tests natively (amd64), where uinput works;
 - end to end: this PC's ssh.exe and r36s-remote.py -> dArkOS's own sshd (PC Link's config) -> the agent.
@@ -76,6 +77,17 @@ def test_pclinkd_on_the_debian13_standin():
     assert result.returncode == 0 and "failed 0" in result.stdout, result.stdout[-4000:] + result.stderr[-2000:]
 
 
+def test_menu_on_the_debian13_standin():
+    tag = tools_image("amd64")
+    result = sh(["docker", "run", "--rm", "--privileged", "--platform", "linux/amd64", "-v", f"{ROOT}:/w:ro", tag, "sh", "/w/tests/device/standin-run.sh", "bash", "/w/tests/device/test_menu.sh"])
+    assert result.returncode == 0 and "failed 0" in result.stdout, result.stdout[-4000:] + result.stderr[-2000:]
+
+
+def test_menu_in_the_darkos_rootfs(rootfs):
+    result = sh([*ARM64, "bash", "/w/tests/device/test_menu.sh"])
+    assert result.returncode == 0 and "failed 0" in result.stdout, result.stdout[-4000:] + result.stderr[-2000:]
+
+
 def test_agent_in_the_darkos_rootfs(rootfs):
     result = sh([*ARM64, "bash", "/w/tests/device/run-agent-tests.sh"])
     assert result.returncode == 0, result.stdout[-3000:] + result.stderr[-4000:]
@@ -87,7 +99,7 @@ def test_kernel_abi_and_buttons(arch):
     extra = ["--buttons"] if arch == "amd64" else []  # uinput ioctls only work natively, not under arm64 emulation
     result = sh(["docker", "run", "--rm", "--privileged", "--platform", f"linux/{arch}", "-v", f"{ROOT}:/w:ro", tag, "bash", "/w/tests/device/run-native-tests.sh", *extra])
     assert result.returncode == 0, result.stdout[-3000:] + result.stderr[-3000:]
-    assert "29 of 29 ABI values match" in result.stdout
+    assert "30 of 30 ABI values match" in result.stdout
 
 
 def png_pixel(data: bytes, x: int, y: int) -> tuple[int, int, int]:
