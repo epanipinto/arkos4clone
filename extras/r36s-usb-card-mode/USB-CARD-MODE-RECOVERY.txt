@@ -1,0 +1,44 @@
+R36S USB CARD MODE - RECOVERY
+=============================
+
+"USB Card Mode" (dArkOS: Options > Tools) restarts the R36S once into USB card mode.
+For that one boot, boot.ini on this BOOT drive is replaced by a card-mode version.
+Card mode's start-up (post-flash.sh) copies boot.ini.darkos back over boot.ini before
+it shares the cards, so the next power-on starts dArkOS again.
+
+IF THE R36S STAYS ON A BLACK SCREEN OR DOESN'T GET BACK TO dArkOS
+1. Hold the power button for about 10 seconds until the R36S is off, then turn it on.
+   If dArkOS starts, you're done: boot.ini had already been put back.
+2. Otherwise take this card (the dArkOS card, slot TF1) out and put it in the PC's SD
+   slot. Set the adapter's lock switch to unlocked before inserting it.
+3. Copy boot.ini.darkos over boot.ini on the BOOT drive. In a Command Prompt, with
+   D: replaced by the BOOT drive's letter:
+
+       copy /Y D:\boot.ini.darkos D:\boot.ini
+
+   If boot.ini.darkos is missing, copy boot.ini.darkos-original instead (dArkOS's
+   boot.ini from before card mode was installed).
+   In File Explorer, first turn on View > Show > File name extensions: otherwise
+   boot.ini.darkos shows up as "boot.ini".
+4. Eject the drive, put the card back in slot TF1 and turn the R36S on.
+
+FILES ON THIS DRIVE
+- boot.ini.usbmode          card-mode boot.ini; the tool adds the current dArkOS boot
+                            after it as U-Boot's fallback
+- boot.ini.darkos           dArkOS's boot.ini, saved by the tool each time it runs
+- boot.ini.darkos-original  dArkOS's boot.ini when card mode was first installed
+- post-flash.sh             card-mode start-up: restores boot.ini, then runs the helper
+- usbmode\                  EmuELEC 4.7 kernel (KERNEL), card-mode board file, helper
+                            (r36s-usb.v7.sh), busybox-r36s, r36s-link.tar, the
+                            on-screen messages (screens.tar), the file list
+                            usbmode.md5, and the last card-mode log (r36s-usb.log)
+- usbmode\no-serial         not there unless you add it: an empty file with this name
+                            turns off card mode's USB serial port (r36s-console.py on
+                            the PC uses it), leaving just the two card drives
+- USB-CARD-MODE-RECOVERY.txt  this file
+
+TO REMOVE USB CARD MODE
+Check that boot.ini is dArkOS's (it doesn't mention R36S-USB-CARD-MODE), then delete
+usbmode\, post-flash.sh, boot.ini.usbmode, boot.ini.darkos, boot.ini.darkos-original
+and this file, and delete "USB Card Mode.sh" from the tools folder of the games card
+(R36S-GAMES\tools) and of EASYROMS (EASYROMS\tools).

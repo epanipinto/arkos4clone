@@ -1,0 +1,8 @@
+a0e4b524c41147f7abef3f274d7d9981  KERNEL
+299f8434c357fcc474e1873e80b56247  rk3326-evb-lp3-v12-linux.dtb
+5ffaa45218dd6c648d7709c286bfaada  r36s-usb.v7.sh
+977d128677b916a106e796473a750c26  busybox-r36s
+da62b8f7c4423d21be782903c32a8b68  r36s-link.tar
+0accdd382cd52bae0bb7e33c96e599b6  screens.tar
+ae2aa9c391ba402a5b9cc1f7e219db9c  ../post-flash.sh
+f5e1814c13d1d25aba6679d3397f1ea5  ../boot.ini.usbmode
